@@ -7,6 +7,7 @@ automatic re-send when the upstream response is ambiguous.
 """
 from __future__ import annotations
 
+import argparse
 import fcntl
 import hashlib
 import json
@@ -159,7 +160,13 @@ def journal_write(status, content_id, full_sha=None):
             tmp.unlink()
 
 def main():
+    argp=argparse.ArgumentParser()
+    argp.add_argument("--preflight",action="store_true",
+                      help="validate target, state, permissions; no download or send")
+    args=argp.parse_args()
     guard()
+    needed(JOURNAL.parent.is_dir() and not JOURNAL.parent.is_symlink() and
+           os.access(JOURNAL.parent,os.W_OK),"PRIVATE_JOURNAL_FOLDER_NOT_READY")
     needed(LOCK.is_file() and not LOCK.is_symlink(),"WORKER_LOCK_MISSING")
     with LOCK.open("a") as f:
         fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -184,7 +191,14 @@ def main():
         print("TARGET=JOB11_SINGLE_VERIFIED_EITAA_CHANNEL")
         print("DESTINATION_VERIFIED_AND_DIFFERENT_FROM_SOURCE=YES")
         print("CAPTION_LENGTH="+str(len(caption)))
+        print("CONTENT_ID_RESOLVED_VIA_ITEM_FK="+str(content_id))
         print("JOB11_TIMERS_PAUSED_NO_DB_MUTATIONS=YES")
+        from eitaa_media_exchange import SPOOL
+        needed(SPOOL.is_dir() and not SPOOL.is_symlink(),"MEDIA_EXCHANGE_SPOOL_NOT_AVAILABLE")
+        if args.preflight:
+            print("PRECHECK_OK_ONE_VIDEO_7084_READY_NO_NETWORK_CALLS_NO_SEND")
+            return
+
         gateway("auth/loadSession",{"phone":source["phone"]},timeout=25)
         data=gateway("messages/read",{"phone":source["phone"],"id":int(source["peer_id"]),
                  "type":"channel","offset":7085,"size":3,"downward":False},timeout=60)
