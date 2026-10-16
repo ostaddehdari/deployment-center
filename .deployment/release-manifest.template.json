@@ -1,0 +1,26 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.1.3",
+  "version": "0.1.3",
+  "release_type": "deployment-hotfix",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "base_release": "zohaonline-v0.1.2",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.1.3.zip",
+  "artifact_sha256": "__ASSET_SHA256__",
+  "installer": "install.sh",
+  "installer_sha256": "__INSTALL_SHA256__",
+  "expected_runtime_counts": {
+    "mold": 33,
+    "full_sermon": 34,
+    "supporting": 31,
+    "processing_keys": 16,
+    "taxonomies": 40
+  },
+  "fixes": [
+    "Execute versioned seed-index-runtime.py after schema migration",
+    "Commit seed generator into Zoha GitLab source",
+    "Fail deployment unless runtime field counts and processing key count match expected defaults"
+  ]
+}
