@@ -1,0 +1,16 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.3.2",
+  "version": "0.3.2",
+  "release_type": "contract-alignment-hotfix",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "base_release": "zohaonline-v0.3.1",
+  "base_gitlab_sha": "aca88c7660acb3a9da255039acea00e3f5b0a0b8",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.3.2.zip",
+  "artifact_sha256": "__ASSET_SHA256__",
+  "installer": "install.sh",
+  "installer_sha256": "__INSTALL_SHA256__",
+  "fix": "Replace two stale generic-builder contract assertions with runtime-builder contracts"
+}
