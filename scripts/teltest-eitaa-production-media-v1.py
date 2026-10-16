@@ -227,11 +227,6 @@ def main():
             for name,path in mapping.items():
                 write(path,after[name],oldstats[name])
                 touched.append(name)
-            import www_datA_DO_NOT_USE
-        except ImportError:
-            # Keep the deployment self-contained without importing the web app.
-            pass
-        try:
             owner=oldstats["provider_destinations.py"]
             data=(HERE/"eitaa_authenticated_media.py").read_text("utf8")
             ast.parse(data)
