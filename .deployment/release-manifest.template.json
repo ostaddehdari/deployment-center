@@ -1,0 +1,21 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.2.1",
+  "version": "0.2.1",
+  "release_type": "ui-runtime-hotfix",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "base_release": "zohaonline-v0.2.0",
+  "base_gitlab_sha": "d7e9298e1a989124c79bf529ffee5a5184885f2f",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.2.1.zip",
+  "artifact_sha256": "__ASSET_SHA256__",
+  "installer": "install.sh",
+  "installer_sha256": "__INSTALL_SHA256__",
+  "fixes": [
+    "Explicitly import ContentAuthoringShell in create/edit routes",
+    "Explicitly import IndexRuntimePanel in authoring and indexing routes",
+    "Explicitly import IndexPersonalSelect inside IndexRuntimePanel",
+    "Prevent blank pages caused by unresolved nested Nuxt components"
+  ]
+}
