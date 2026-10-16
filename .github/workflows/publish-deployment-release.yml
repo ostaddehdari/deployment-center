@@ -1,0 +1,59 @@
+name: Publish Deployment Release
+
+on:
+  push:
+    branches:
+      - 'release/**'
+    paths:
+      - '.deployment/READY'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+
+      - name: Assemble and verify immutable artifact
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source .deployment/release.env
+          cat .deployment/payload.part-* > /tmp/release-payload.b64
+          base64 -d /tmp/release-payload.b64 > "/tmp/\${ASSET_NAME}"
+          echo "\${ASSET_SHA256}  /tmp/\${ASSET_NAME}" | sha256sum -c -
+          install -m 0755 .deployment/install.sh /tmp/install.sh
+          cp .deployment/release-manifest.json /tmp/release-manifest.json
+          cp .deployment/SHA256SUMS /tmp/SHA256SUMS
+          cp .deployment/RELEASE_NOTES.md /tmp/RELEASE_NOTES.md
+
+      - name: Create or refresh GitHub Release
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source .deployment/release.env
+          if gh release view "\${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "\${RELEASE_TAG}" \
+              "/tmp/\${ASSET_NAME}" /tmp/install.sh /tmp/release-manifest.json /tmp/SHA256SUMS \
+              --clobber
+          else
+            gh release create "\${RELEASE_TAG}" \
+              "/tmp/\${ASSET_NAME}" /tmp/install.sh /tmp/release-manifest.json /tmp/SHA256SUMS \
+              --target main \
+              --title "\${RELEASE_TITLE}" \
+              --notes-file /tmp/RELEASE_NOTES.md
+          fi
+
+      - name: Verify published assets
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source .deployment/release.env
+          gh release view "\${RELEASE_TAG}" --json tagName,assets,url
