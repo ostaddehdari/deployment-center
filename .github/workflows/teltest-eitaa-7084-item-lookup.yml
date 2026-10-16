@@ -1,0 +1,25 @@
+name: TelTest Eitaa 7084 foreign-key fix
+
+on:
+  pull_request:
+    paths:
+      - "scripts/teltest-eitaa-7084-single-video-send-v1.py"
+      - "tests/test_teltest_eitaa_7084_item_lookup_fix.py"
+      - ".github/workflows/teltest-eitaa-7084-item-lookup.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Static syntax
+        run: python3 -m py_compile scripts/teltest-eitaa-7084-single-video-send-v1.py
+      - name: Foreign key and at-most-once journal tests
+        run: python3 -m unittest discover -s tests -p test_teltest_eitaa_7084_item_lookup_fix.py -v

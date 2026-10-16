@@ -7,6 +7,7 @@ automatic re-send when the upstream response is ambiguous.
 """
 from __future__ import annotations
 
+import argparse
 import fcntl
 import hashlib
 import json
@@ -22,15 +23,15 @@ import tempfile
 from urllib.parse import urlsplit
 
 POST = "7084"
-CONTENT_ID = 392801
+TRANSFER_ITEM_ID = 392801
 EXPECTED_SIZE = 10095369
 EXPECTED_FIRST_SHA256 = "533f14d957e8ffa73b7313656bbe7673f7db1124a91281ffcb2b4a316590f0bb"
 CHUNK = 524288
 CHUNKS = 20
 DB = Path("/var/lib/teltest/data/teltest.sqlite3")
 ACC = Path("/var/lib/teltest/eitaa-accounts/live_accounts.sqlite3")
-LOCK = Path("/var/lib/teltest/locks/delivery-worker.lock")
-JOURNAL = Path("/var/lib/teltest/locks/eitaa-video-7084-one-send.json")
+LOCK = Path("/var/lib/teltest/eitaa-video-7084-private/lock")
+JOURNAL = Path("/var/lib/teltest/eitaa-video-7084-private/one-send.json")
 APP = Path("/opt/teltest/repo")
 
 def fail(msg):
@@ -83,10 +84,14 @@ def guard():
 
 def sources_and_destination():
     with connected(DB) as db:
-        content = db.execute("""SELECT id,external_id,source_ref,source_key,
-                    processed_text,raw_text,connector_code
-                    FROM content_items WHERE id=? AND external_id=? AND connector_code='eitaa'""",
-                    (CONTENT_ID,POST)).fetchone()
+        # TRANSFER_ITEM_ID is an item in the delivery queue, NOT a content_items.id.
+        # Resolve the original content row through its foreign key.
+        content = db.execute("""SELECT c.id,c.external_id,c.source_ref,c.source_key,
+                    c.processed_text,c.raw_text,c.connector_code
+                    FROM transfer_job_items i JOIN content_items c ON c.id=i.content_id
+                    WHERE i.id=? AND i.transfer_job_id=11
+                      AND c.external_id=? AND c.connector_code='eitaa'""",
+                    (TRANSFER_ITEM_ID,POST)).fetchone()
         needed(content is not None, "EXPECTED_VIDEO_POST_NOT_FOUND")
         destinations = db.execute("""SELECT destination_ref,provider_code
                FROM transfer_destinations WHERE transfer_job_id=11 AND enabled=1""").fetchall()
@@ -96,16 +101,16 @@ def sources_and_destination():
               JOIN content_items c ON c.id=i.content_id
               JOIN transfer_destinations d ON d.id=i.destination_id
               WHERE i.transfer_job_id=11 AND c.id=? AND d.enabled=1""",
-              (CONTENT_ID,)).fetchall()
+              (int(content["id"]),)).fetchall()
         needed(len(entries)==1, "VIDEO_ITEM_NOT_UNIQUE_IN_JOB11")
-        needed(entries[0]["status"] not in ("sent","delivered","done","success","completed"),
+        needed(entries[0]["status"] not in ("transferred","sent","delivered","done","success","completed","uncertain"),
                "VIDEO_ITEM_ALREADY_SENT_IN_JOB11")
         keys = sorted(set(filter(None,
                   (channel_username(content["source_ref"]),channel_username(content["source_key"])))))
         needed(bool(keys),"SOURCE_CHANNEL_USERNAME_NOT_AVAILABLE")
         caption = str(content["processed_text"] if content["processed_text"] is not None
                       else (content["raw_text"] or ""))[:4096]
-        return keys, str(destinations[0]["destination_ref"]),caption
+        return int(content["id"]), keys, str(destinations[0]["destination_ref"]),caption
 
 def media_descriptor(msg):
     doc = (msg.get("media") or {}).get("document")
@@ -138,8 +143,8 @@ def media_descriptor(msg):
            "MEDIA_REFERENCE_CHANGED_OR_INVALID")
     return did,access,vals,size
 
-def journal_write(status, full_sha=None):
-    data={"post":7084,"content_id":CONTENT_ID,"job":11,"status":status}
+def journal_write(status, content_id, full_sha=None):
+    data={"post":7084,"content_id":content_id,"transfer_item_id":TRANSFER_ITEM_ID,"job":11,"status":status}
     if full_sha:
         data["sha256"]=full_sha
     tmp=JOURNAL.with_suffix(".json.tmp")
@@ -155,12 +160,18 @@ def journal_write(status, full_sha=None):
             tmp.unlink()
 
 def main():
+    argp=argparse.ArgumentParser()
+    argp.add_argument("--preflight",action="store_true",
+                      help="validate target, state, permissions; no download or send")
+    args=argp.parse_args()
     guard()
+    needed(JOURNAL.parent.is_dir() and not JOURNAL.parent.is_symlink() and
+           os.access(JOURNAL.parent,os.W_OK),"PRIVATE_JOURNAL_FOLDER_NOT_READY")
     needed(LOCK.is_file() and not LOCK.is_symlink(),"WORKER_LOCK_MISSING")
     with LOCK.open("a") as f:
         fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
         guard()
-        keys, dest_ref, caption = sources_and_destination()
+        content_id, keys, dest_ref, caption = sources_and_destination()
         sys.path.insert(0,str(APP))
         from eitaa_live_gateway import gateway,get_target
         from eitaa_media_exchange import readable_gateway_copy
@@ -180,7 +191,14 @@ def main():
         print("TARGET=JOB11_SINGLE_VERIFIED_EITAA_CHANNEL")
         print("DESTINATION_VERIFIED_AND_DIFFERENT_FROM_SOURCE=YES")
         print("CAPTION_LENGTH="+str(len(caption)))
+        print("CONTENT_ID_RESOLVED_VIA_ITEM_FK="+str(content_id))
         print("JOB11_TIMERS_PAUSED_NO_DB_MUTATIONS=YES")
+        from eitaa_media_exchange import SPOOL
+        needed(SPOOL.is_dir() and not SPOOL.is_symlink(),"MEDIA_EXCHANGE_SPOOL_NOT_AVAILABLE")
+        if args.preflight:
+            print("PRECHECK_OK_ONE_VIDEO_7084_READY_NO_NETWORK_CALLS_NO_SEND")
+            return
+
         gateway("auth/loadSession",{"phone":source["phone"]},timeout=25)
         data=gateway("messages/read",{"phone":source["phone"],"id":int(source["peer_id"]),
                  "type":"channel","offset":7085,"size":3,"downward":False},timeout=60)
@@ -232,12 +250,12 @@ def main():
                      "media_type":"file"}
             with readable_gateway_copy(file) as spool_path:
                 payload["path"]=spool_path
-                journal_write("sending_or_uncertain",digest)
+                journal_write("sending_or_uncertain",content_id,digest)
                 print("SINGLE_MEDIA_SEND_ATTEMPT_STARTED=YES",flush=True)
                 response=gateway("messages/sendMedia",payload,timeout=900)
                 needed(isinstance(response,dict) and response.get("result")=="ok",
                        "UPLOAD_RESULT_UNCONFIRMED_NO_AUTOMATIC_RETRY")
-                journal_write("confirmed_by_gateway",digest)
+                journal_write("confirmed_by_gateway",content_id,digest)
                 print("VIDEO_SEND_RESULT_OK=YES",flush=True)
                 print("TARGET=JOB11_SINGLE_EITAA_CHANNEL",flush=True)
                 print("UPLOAD_MEDIA_TYPE=FILE_MAY_DISPLAY_AS_ATTACHMENT",flush=True)
