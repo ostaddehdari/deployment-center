@@ -1,0 +1,16 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.3.3",
+  "version": "0.3.3",
+  "release_type": "runtime-overview-sql-hotfix",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "base_release": "zohaonline-v0.3.2",
+  "base_gitlab_sha": "2cb7b5f68dfe16c885a01b64ec4f7a49fa688249",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.3.3.zip",
+  "artifact_sha256": "__ASSET_SHA256__",
+  "installer": "install.sh",
+  "installer_sha256": "__INSTALL_SHA256__",
+  "fix": "Replace grouped query ORDER BY p.taxonomy_code with grouped p.sort_order and add live PostgreSQL smoke verification"
+}
