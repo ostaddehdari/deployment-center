@@ -1,0 +1,16 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.3.1",
+  "version": "0.3.1",
+  "release_type": "payload-integrity-hotfix",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "base_release": "zohaonline-v0.3.0",
+  "base_gitlab_sha": "aca88c7660acb3a9da255039acea00e3f5b0a0b8",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.3.1.zip",
+  "artifact_sha256": "__ASSET_SHA256__",
+  "installer": "install.sh",
+  "installer_sha256": "__INSTALL_SHA256__",
+  "fix": "Correct one corrupted base64 character in v0.3.0 internal patch payload before integrity verification"
+}
