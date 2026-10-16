@@ -22,13 +22,39 @@ jobs:
         run: |
           set -Eeuo pipefail
           source .deployment/release.env
-          cat .deployment/payload.part-* > /tmp/release-payload.b64
-          base64 -d /tmp/release-payload.b64 > "/tmp/${ASSET_NAME}"
-          echo "${ASSET_SHA256}  /tmp/${ASSET_NAME}" | sha256sum -c -
+          if [ -n "${BASE_RELEASE_TAG:-}" ]; then
+            mkdir -p /tmp/release-stage
+            curl --fail --location --retry 3 \
+              "https://github.com/${GITHUB_REPOSITORY}/releases/download/${BASE_RELEASE_TAG}/${BASE_ASSET_NAME}" \
+              -o /tmp/base-release.zip
+            unzip -q /tmp/base-release.zip -d /tmp/release-stage
+            if [ -d .deployment/overlay ]; then cp -a .deployment/overlay/. /tmp/release-stage/; fi
+            chmod +x /tmp/release-stage/apply.sh 2>/dev/null || true
+            (cd /tmp/release-stage && zip -qr "/tmp/${ASSET_NAME}" .)
+          else
+            cat .deployment/payload.part-* > /tmp/release-payload.b64
+            base64 -d /tmp/release-payload.b64 > "/tmp/${ASSET_NAME}"
+            if [ -n "${ASSET_SHA256:-}" ]; then
+              echo "${ASSET_SHA256}  /tmp/${ASSET_NAME}" | sha256sum -c -
+            fi
+          fi
+          FINAL_ASSET_SHA256="$(sha256sum "/tmp/${ASSET_NAME}" | awk '{print $1}')"
           install -m 0755 .deployment/install.sh /tmp/install.sh
-          cp .deployment/release-manifest.json /tmp/release-manifest.json
-          cp .deployment/SHA256SUMS /tmp/SHA256SUMS
+          INSTALL_SHA256="$(sha256sum /tmp/install.sh | awk '{print $1}')"
+          printf '%s  %s\n%s  %s\n' \
+            "$FINAL_ASSET_SHA256" "$ASSET_NAME" \
+            "$INSTALL_SHA256" "install.sh" > /tmp/SHA256SUMS
+          if [ -f .deployment/release-manifest.template.json ]; then
+            sed \
+              -e "s/__ASSET_SHA256__/${FINAL_ASSET_SHA256}/g" \
+              -e "s/__INSTALL_SHA256__/${INSTALL_SHA256}/g" \
+              .deployment/release-manifest.template.json > /tmp/release-manifest.json
+          else
+            cp .deployment/release-manifest.json /tmp/release-manifest.json
+          fi
           cp .deployment/RELEASE_NOTES.md /tmp/RELEASE_NOTES.md
+          echo "FINAL_ASSET_SHA256=$FINAL_ASSET_SHA256" >> "$GITHUB_ENV"
+          echo "INSTALL_SHA256=$INSTALL_SHA256" >> "$GITHUB_ENV"
 
       - name: Create or refresh GitHub Release
         env:
