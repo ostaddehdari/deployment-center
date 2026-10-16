@@ -1,0 +1,28 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.3.0",
+  "version": "0.3.0",
+  "release_type": "real-runtime-index-builder",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "base_release": "zohaonline-v0.2.2",
+  "base_gitlab_sha": "aca88c7660acb3a9da255039acea00e3f5b0a0b8",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.3.0.zip",
+  "artifact_sha256": "__ASSET_SHA256__",
+  "installer": "install.sh",
+  "installer_sha256": "__INSTALL_SHA256__",
+  "runtime_model": {
+    "taxonomies": 40,
+    "post_type_fields": 98,
+    "active_terms_at_base": 755
+  },
+  "features": [
+    "Runtime-backed admin index builder",
+    "Collapsible left tool rail with Elements and Settings tabs",
+    "Real searchable taxonomy term manager with create/edit/deactivate",
+    "Post-type-specific builder deep links",
+    "Actual IndexRuntimePanel preview",
+    "Legacy Labels navigation removed"
+  ]
+}
