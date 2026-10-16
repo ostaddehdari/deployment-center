@@ -1,0 +1,30 @@
+name: TelTest Eitaa First-Chunk Probe Checks
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/teltest-eitaa-video-first-chunk-*.py'
+      - 'tests/test_teltest_eitaa_first_chunk.py'
+      - '.github/workflows/teltest-eitaa-first-chunk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python syntax
+        run: |
+          python3 -m py_compile \
+            scripts/teltest-eitaa-history-route-v1.py \
+            scripts/teltest-eitaa-video-first-chunk-route-v1.py \
+            scripts/teltest-eitaa-video-first-chunk-probe-v1.py \
+            tests/test_teltest_eitaa_first_chunk.py
+      - name: Security and patch unit tests
+        run: python3 -m unittest discover -s tests -p test_teltest_eitaa_first_chunk.py -v
