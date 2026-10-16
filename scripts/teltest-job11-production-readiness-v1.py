@@ -102,6 +102,19 @@ def main():
         print("VIDEO_7084_ITEM_STATUS="+str(affected["status"]))
         print("VIDEO_7084_ITEM_PART_COUNT="+str(affected["parts"]))
         print("VIDEO_7084_ITEM_RECEIPT_PRESENT="+str(bool(affected["destination_external_id"])))
+    for p in ("7069","7070","7072","7084"):
+        records=db.execute("""
+          SELECT i.status AS status,d.provider_code AS provider
+          FROM transfer_job_items i
+          JOIN content_items c ON c.id=i.content_id
+          JOIN transfer_destinations d ON d.id=i.destination_id
+          WHERE i.transfer_job_id=11 AND c.connector_code='eitaa'
+            AND c.external_id=? AND d.enabled=1
+        """,(p,)).fetchall()
+        print("PREVIOUS_MANUAL_SUCCESS_"+p+"_MATCHES="+str(len(records)))
+        for rec in records[:2]:
+            print("PREVIOUS_MANUAL_SUCCESS_"+p+"_QUEUE_STATUS="+
+                str(rec["provider"])+"/"+str(rec["status"]))
     print("JOB11_READ_ONLY_AUDIT_FINISHED_NO_MESSAGES_SENT")
     db.close()
 if __name__=="__main__":
