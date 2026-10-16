@@ -1,0 +1,16 @@
+{
+  "project_id":"zohaonline",
+  "release_tag":"zohaonline-v0.3.4",
+  "version":"0.3.4",
+  "release_type":"admin-preview-auth-bridge",
+  "source_of_truth":"GitLab vendors/zoha/zoha",
+  "distribution":"GitHub Deployment Center",
+  "base_release":"zohaonline-v0.3.3",
+  "base_gitlab_sha":"02b76e32ea91776ae459c9e773f24c2a58d380ea",
+  "target_path":"/var/www/zoha",
+  "artifact":"zohaonline-v0.3.4.zip",
+  "artifact_sha256":"__ASSET_SHA256__",
+  "installer":"install.sh",
+  "installer_sha256":"__INSTALL_SHA256__",
+  "fix":"Admin preview uses admin-authenticated preview schema/options routes while preserving IndexRuntimePanel renderer"
+}
