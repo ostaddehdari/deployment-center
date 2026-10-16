@@ -1,0 +1,14 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.1.0",
+  "version": "0.1.0",
+  "release_type": "deployment-update",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.1.0.zip",
+  "artifact_sha256": "d1c0c4f375d0048aee24c9b5a27368dc42128fd0d74c39e73c53f57bd9c483c8",
+  "artifact_bytes": 30285,
+  "installer": "install.sh",
+  "installer_sha256": "12860072db33668a1ce392c2a5dc6c81e5953427271af36d353254d83ab7e527",
+  "git_policy": "preserve GitLab origin; commit/push current branch and verify remote SHA before DB migration/restart"
+}
