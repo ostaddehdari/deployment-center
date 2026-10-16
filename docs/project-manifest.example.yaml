@@ -1,0 +1,22 @@
+# Example ONLY: no real target has been verified.
+project_id: sample-project
+source:
+  provider: gitlab # or github
+  repository: example-group/sample-project
+distribution:
+  provider: github-releases
+  repository: example-owner/sample-project-releases
+  artifact_pattern: sample-project-v{version}.zip
+target:
+  server_alias: example-server
+  service_manager: systemd # or docker-compose, k8s, static
+  deploy_path: /opt/sample-project
+  services:
+    - sample-project.service
+policies:
+  automatic_production_deploy: false
+  preflight_required: true
+  backup_required: true
+  healthcheck_required: true
+  require_sha256: true
+  preserve_env_and_user_data: true
