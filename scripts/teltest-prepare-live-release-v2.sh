@@ -44,7 +44,9 @@ Safety: job 11 and delivery timers must remain stopped. Perform only a checksumm
 PUBLIC RELEASE WARNING: inspect source and packaged files for embedded secrets before publishing.
 EOF
 (cd "$OUT" && sha256sum "$TAG.zip" install-release.sh release-manifest.json > SHA256SUMS && sha256sum -c SHA256SUMS)
-unzip -p "$OUT/$TAG.zip" app/eitaa_live_gateway.py | grep -Fq '# TELTEST_EITAA_NATIVE_PHOTO_V1' || { echo ERROR_NATIVE_PHOTO_NOT_IN_ZIP;exit 4; }
+unzip -p "$OUT/$TAG.zip" app/eitaa_live_gateway.py > "$OUT/native-photo-check.py"
+grep -Fq '# TELTEST_EITAA_NATIVE_PHOTO_V1' "$OUT/native-photo-check.py" || { echo ERROR_NATIVE_PHOTO_NOT_IN_ZIP;exit 4; }
+rm -f "$OUT/native-photo-check.py"
 python3 - "$OUT/release-manifest.json" "$TAG" <<'PY'
 import json,sys
 p,t=sys.argv[1:]
