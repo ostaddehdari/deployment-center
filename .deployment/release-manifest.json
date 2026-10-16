@@ -1,0 +1,21 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.2.0",
+  "version": "0.2.0",
+  "release_type": "authoring-index-integration",
+  "source_snapshot_sha": "779929d254072f724e08b61d7cc4c1aed1bf4ac9",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.2.0.zip",
+  "artifact_sha256": "e54711868b3df9be5f503fca0c7d84cf6dadc6a8c40e1232da6ed9b637128cef",
+  "installer": "install.sh",
+  "installer_sha256": "7a668db0f57f891ca2a6469ab9b6692888d8e22ca3fa0b9e92d39feccf006ff1",
+  "work": "Embed runtime indexing into create/edit flows and align runtime auth/DB with current Zoha architecture",
+  "requires": {
+    "runtime_defaults_release": "zohaonline-v0.1.3",
+    "taxonomies": 40,
+    "post_type_fields": 98,
+    "active_terms": 755
+  }
+}
