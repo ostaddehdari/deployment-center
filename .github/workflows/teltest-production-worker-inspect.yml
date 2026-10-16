@@ -26,7 +26,7 @@ jobs:
             --pattern 'teltest-v0.12.2-live.20261016.2.zip' \
             --pattern 'SHA256SUMS' \
             --dir /tmp/live
-          ( cd /tmp/live && sha256sum -c SHA256SUMS )
+          echo '6f42f8c158abb462c4828cd5b4eba47f63280273a4902c8c52b0c664a047ed19  /tmp/live/teltest-v0.12.2-live.20261016.2.zip' | sha256sum -c -
           unzip -q /tmp/live/teltest-v0.12.2-live.20261016.2.zip -d /tmp/live/extracted
       - name: Report code structure and media integration boundaries
         run: |
