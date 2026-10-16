@@ -1,0 +1,20 @@
+{
+  "project_id": "zohaonline",
+  "release_tag": "zohaonline-v0.1.1",
+  "version": "0.1.1",
+  "release_type": "deployment-hotfix",
+  "source_of_truth": "GitLab vendors/zoha/zoha",
+  "distribution": "GitHub Deployment Center",
+  "base_release": "zohaonline-v0.1.0",
+  "target_path": "/var/www/zoha",
+  "artifact": "zohaonline-v0.1.1.zip",
+  "artifact_sha256": "__ASSET_SHA256__",
+  "installer": "install.sh",
+  "installer_sha256": "__INSTALL_SHA256__",
+  "fixes": [
+    "Support AppModule files without an imports array",
+    "Commit and push release files to the Zoha GitLab origin",
+    "Verify GitLab remote SHA before database migration",
+    "Preserve unrelated dirty working-tree changes"
+  ]
+}
