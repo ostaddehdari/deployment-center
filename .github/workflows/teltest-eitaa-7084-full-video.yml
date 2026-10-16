@@ -1,0 +1,28 @@
+name: TelTest Eitaa single video send test
+
+on:
+  pull_request:
+    paths:
+      - "scripts/teltest-eitaa-7084-*.py"
+      - "tests/test_teltest_eitaa_7084_full_video_v1.py"
+      - ".github/workflows/teltest-eitaa-7084-full-video.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python syntax of both scripts
+        run: |
+          python3 -m py_compile \
+            scripts/teltest-eitaa-7084-twenty-chunks-v1.py \
+            scripts/teltest-eitaa-7084-single-video-send-v1.py
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -p test_teltest_eitaa_7084_full_video_v1.py -v
