@@ -1,22 +1,21 @@
-# ZohaOnline v0.4.8 — Dynamic Parent Ownership Contract
+# تولباکس حرفه‌ای فرم و نمایه‌ساز ضحی — ۰.۵.۰
 
-v0.4.7 passed patch verification and applied both patches, then rolled back
-before builds, commits, database migration, or service restart. One remaining
-source contract expected the old direct `a.topic` binding; the dynamic renderer
-now receives `selection(a.topic)`.
+- ۴۳ ابزار در پنج گروه پایه، انتخابی، پیشرفته، چیدمان و قیمت‌گذاری؛ نمایه‌های ضحی در گروه جداگانه.
+- جستجو و جمع‌کردن گروه‌ها؛ افزودن با کلیک یا کشیدن به محل دلخواه؛ تکثیر، تغییر عرض و جابه‌جایی.
+- تنظیمات اختصاصی، پیش‌فرض، محدودیت متن و عدد، الگو، ویرایش گروهی گزینه‌ها و شرط‌های همه/یکی.
+- فرم چندصفحه‌ای و جلوگیری از ادامه با فیلد الزامی خالی؛ ویرایش متن غنی، جدول و گروه، امضا، امتیاز، انتخاب تصویری و محاسبات.
+- بارگذاری واقعی فایل و دریافت فقط توسط مالک، با محدودیت نوع و اندازه.
+- پیش‌نمایش دسکتاپ، تبلت و موبایل؛ ذخیره تنظیمات پیش از انتشار نسخه‌دار.
+- سه مانع نصب ۰.۴.۸ در کد عملیاتی اصلاح شده‌اند: پرچم صریح پیش‌نمایش ادمین، کنترل‌های سازگار با Runtime قدیمی با import صریح و اصطلاح زیرموضوع.
 
-This release updates that assertion and checks the complete forwarding chain:
-topic selection, dynamic field, personal selector, and separate system/personal
-parent IDs. No application behavior is changed relative to the v0.4.7 candidate.
-The main v0.4.4 source patch is unchanged.
+قیمت‌گذاری مبلغ فرم را محاسبه می‌کند؛ در این نسخه تراکنش بانکی انجام نمی‌شود.
 
-Local verification uses the collected source at the exact installer base commit
-`eb140a90aa78b4b92f4443a94591af415fd36392`: both patches apply cleanly, the
-reported stale assertion is reproduced, and selection/filter/ownership behavior
-is exercised for system parents, personal parents, single/array values, empty
-values, and missing parents. The corrected complete parent contract is executed.
+## بررسی‌ها
 
-The collected archive is a partial source snapshot. The complete contract suite,
-API build, Nuxt build, GitLab push, database backup/migration and live service
-checks must still pass on the target server before installation is successful.
-All existing installer gates are retained.
+۲۰ آزمون مرتبط، بررسی TypeScript مؤلفه‌های تغییرکرده، کامپایل Vue و ۱۳ بررسی تعاملی مرورگر موفق شدند.
+آزمون فایل بایت‌های واقعی را می‌نویسد، مالک دیگر را رد می‌کند و فایلِ تراکنش ناموفق را پاک می‌کند.
+آزمون‌های مرورگر با داده‌ها و API آزمایشی انجام شده‌اند. سورس کامل سرور و دیتابیس زنده در این محیط در دسترس نیستند.
+تست کامل، ساخت API و Nuxt، GitLab push، پشتیبان دیتابیس، migrationهای ۱۸۰ و ۱۹۰ و بررسی سرویس‌ها هنگام نصب اجرا می‌شوند.
+
+این بسته از commit مبنا `eb140a90aa78b4b92f4443a94591af415fd36392` نصب می‌شود و شامل تغییرات لازم ۰.۴.۴ تا ۰.۴.۸ است.
+پس از rollback نسخه قبلی می‌توان مستقیم همین نسخه را اجرا کرد. تنظیمات و سورس نامرتبط بازنویسی نمی‌شوند.
