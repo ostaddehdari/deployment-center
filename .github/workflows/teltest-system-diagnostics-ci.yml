@@ -1,0 +1,60 @@
+name: TelTest system diagnostics source compatibility
+
+on:
+  pull_request:
+    paths:
+      - "scripts/teltest_job_system_diagnostics.py"
+      - "scripts/teltest_system_journal_collector.py"
+      - "scripts/teltest-system-diagnostics.js"
+      - "scripts/teltest-system-diagnostics.css"
+      - "scripts/teltest-install-system-diagnostics-v1.py"
+      - "tests/test_teltest_system_diagnostics_v1.py"
+      - ".github/workflows/teltest-system-diagnostics-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Python/JavaScript static validation
+        run: |
+          python3 -m py_compile \
+            scripts/teltest_job_system_diagnostics.py \
+            scripts/teltest_system_journal_collector.py \
+            scripts/teltest-install-system-diagnostics-v1.py
+          node --check scripts/teltest-system-diagnostics.js
+          python3 -m unittest discover -s tests -p test_teltest_system_diagnostics_v1.py -v
+      - name: Exact patch compatibility with signed public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/teltest-review
+          gh release download teltest-v0.12.2-live.20261016.2 \
+            --repo ostaddehdari/deployment-center \
+            --pattern 'teltest-v0.12.2-live.20261016.2.zip' \
+            --dir /tmp/teltest-review
+          echo '6f42f8c158abb462c4828cd5b4eba47f63280273a4902c8c52b0c664a047ed19  /tmp/teltest-review/teltest-v0.12.2-live.20261016.2.zip' | sha256sum -c -
+          unzip -q /tmp/teltest-review/teltest-v0.12.2-live.20261016.2.zip \
+            -d /tmp/teltest-review/extracted
+          python3 - <<'PY'
+          import ast, importlib.util, pathlib
+          target=pathlib.Path('scripts/teltest-install-system-diagnostics-v1.py')
+          spec=importlib.util.spec_from_file_location('installer',target)
+          mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+          src=pathlib.Path('/tmp/teltest-review/extracted/app')
+          operations=(src/'operations_center.py').read_text(encoding='utf8')
+          page=(src/'templates/dashboard.html').read_text(encoding='utf8')
+          fixed,new_html=mod.patch(operations,page)
+          ast.parse(fixed)
+          assert 'teltest-system-diagnostics.js' in new_html
+          assert 'register_system_diagnostics(app, login_required)' in fixed
+          assert 'data-op-view-transfer' in (src/'static/operations-center.js').read_text()
+          print('SIGNED_LIVE_DASHBOARD_COMPATIBLE=YES')
+          PY

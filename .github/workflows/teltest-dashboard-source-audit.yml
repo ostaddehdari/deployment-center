@@ -1,0 +1,82 @@
+name: Inspect TelTest live job and dashboard
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/teltest-dashboard-source-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download pinned published live TelTest code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/teltest
+          gh release download teltest-v0.12.2-live.20261016.2 --repo ostaddehdari/deployment-center --pattern 'teltest-v0.12.2-live.20261016.2.zip' --dir /tmp/teltest
+          echo '6f42f8c158abb462c4828cd5b4eba47f63280273a4902c8c52b0c664a047ed19  /tmp/teltest/teltest-v0.12.2-live.20261016.2.zip' | sha256sum -c -
+          unzip -q /tmp/teltest/teltest-v0.12.2-live.20261016.2.zip -d /tmp/teltest/src
+      - name: Show service and UI mounting points
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import ast
+          root=Path('/tmp/teltest/src/app')
+          print('ALL_FILE_PATHS')
+          for p in sorted(root.rglob('*')):
+              if p.is_file():
+                  print(p.relative_to(root),p.stat().st_size)
+          for name in ('operations_center.py','delivery_queue.py','app.py'):
+              p=root/name
+              if not p.exists():continue
+              s=p.read_text()
+              print('FILE_START',name)
+              for tok in (
+                  'def create_transfer_job(', 'def transfer_dashboard(',
+                  'def enqueue(', 'def init_operations_center(',
+                  'def init_delivery_queue(', 'def init_provider_destinations(',
+                  'def transfer_jobs_list(', 'def init_schema(',
+              ):
+                  i=s.find(tok)
+                  if i>=0:print('ANCHOR',tok,'LINE',s[:i].count('\n')+1)
+              if name=='operations_center.py':
+                  for n in ('def create_transfer_job(', 'def transfer_dashboard('):
+                      i=s.find(n)
+                      if i>=0:
+                          print('EXTRACT',n)
+                          # Don't print raw user data; this is public source.
+                          print(s[i:i+4800])
+              if name=='delivery_queue.py':
+                  i=s.find('def enqueue(')
+                  if i>=0:print('EXTRACT enqueue',s[i:i+2300])
+          ui=(root/'static/operations-center.js').read_text()
+          pos=ui.find('workspace.scrollIntoView({ behavior: "smooth", block: "start" });')
+          if pos>=0:
+              print('UI_TRANSFER_WORKSPACE_BEGIN')
+              print(ui[max(0,pos-1100):pos+8500])
+              print('UI_TRANSFER_WORKSPACE_END')
+          tpl=(root/'templates/dashboard.html').read_text()
+          for term in ('transferWorkspace','operations-center.js'):
+              ix=tpl.find(term)
+              if ix>=0:
+                  print('TEMPLATE_CONTEXT',term,repr(tpl[max(0,ix-600):ix+1300]))
+          for p in sorted(root.rglob('*')):
+              if not p.is_file():continue
+              rel=str(p.relative_to(root))
+              if p.suffix in ('.js','.html') and p.stat().st_size<=1000000:
+                  s=p.read_text(errors='replace')
+                  matches=[term for term in ('transfer-jobs/','transfer_dashboard','delivery_status','مقصد','لاگ','logs','refreshTransfer') if term in s]
+                  if matches:
+                      print('UI_FILE',rel,'MATCH',','.join(matches))
+                      for term in ('transfer-jobs/','delivery_status','transfer_dashboard'):
+                          pos=s.find(term)
+                          if pos>=0:print('UI_CONTEXT',term,repr(s[max(0,pos-180):pos+320]))
+          PY
