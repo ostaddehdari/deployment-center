@@ -49,7 +49,7 @@ PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/teltest/system-logs
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH
 RestrictSUIDSGID=true
 """
 TIMERTXT = """[Unit]
