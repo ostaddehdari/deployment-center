@@ -1,17 +1,17 @@
 {
   "project_id":"zohaonline",
-  "release_tag":"zohaonline-v0.4.5",
-  "version":"0.4.5",
-  "release_type":"hybrid-builder-contract-alignment",
+  "release_tag":"zohaonline-v0.4.6",
+  "version":"0.4.6",
+  "release_type":"direct-contract-patch-verification",
   "source_of_truth":"GitLab vendors/zoha/zoha",
   "distribution":"GitHub Deployment Center",
-  "base_release":"zohaonline-v0.4.4",
+  "base_release":"zohaonline-v0.4.5",
   "base_gitlab_sha":"eb140a90aa78b4b92f4443a94591af415fd36392",
   "target_path":"/var/www/zoha",
-  "artifact":"zohaonline-v0.4.5.zip",
+  "artifact":"zohaonline-v0.4.6.zip",
   "artifact_sha256":"__ASSET_SHA256__",
   "installer":"install.sh",
   "installer_sha256":"__INSTALL_SHA256__",
   "main_patch_sha256":"b80bbbdac908c434bf2db1588640db3c6fb2258bd7c668fdac8b84e379ccd58f",
-  "contract_patch_sha256":"cbee7c6835e9578fecb9525bb7519562311d3bbba52330fd0df610c69e027228"
+  "contract_patch_verification":"outer release SHA256 + git apply --check"
 }
