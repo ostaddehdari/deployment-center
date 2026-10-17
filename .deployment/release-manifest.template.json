@@ -1,0 +1,16 @@
+{
+  "project_id":"zohaonline",
+  "release_tag":"zohaonline-v0.4.1",
+  "version":"0.4.1",
+  "release_type":"payload-integrity-hotfix",
+  "source_of_truth":"GitLab vendors/zoha/zoha",
+  "distribution":"GitHub Deployment Center",
+  "base_release":"zohaonline-v0.4.0",
+  "base_gitlab_sha":"eb140a90aa78b4b92f4443a94591af415fd36392",
+  "target_path":"/var/www/zoha",
+  "artifact":"zohaonline-v0.4.1.zip",
+  "artifact_sha256":"__ASSET_SHA256__",
+  "installer":"install.sh",
+  "installer_sha256":"__INSTALL_SHA256__",
+  "payload_sha256":"5f2c485c7d04fe8dac4c1f6c956e0ecdd1eadda80887bc21a22217769cb44bf4"
+}
