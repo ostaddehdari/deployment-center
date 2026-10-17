@@ -168,6 +168,11 @@ async def download_eitaa_media(url, tmp_dir, media_index, source_post=None, medi
             result = await session.send(transmit,kind="http")
             return result.json()'''
     c=c.replace(orig,swap,1)
+    # EitaaBun returns {'result':'ok'} only after upload+send; generic dict
+    # or a missing status is never an acknowledgement. Fail closed.
+    old_ack="if not isinstance(result,dict) or (result.get('result') not in (None,'ok','success') and result.get('ok') is not True):"
+    must(c.count(old_ack)==1,"EITAA_SEND_ACK_SHAPE_CHANGED")
+    c=c.replace(old_ack,"if not isinstance(result,dict) or not (result.get('result') in ('ok','success') or result.get('ok') is True):",1)
     old="gateway('messages/sendMedia',payload,timeout=180)"
     must(c.count(old)==1,"MEDIA_TIMEOUT_ANCHOR_CHANGED")
     c=c.replace(old,"gateway('messages/sendMedia',payload,timeout=1800)",1)
