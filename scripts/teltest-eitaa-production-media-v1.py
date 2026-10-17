@@ -12,9 +12,10 @@ from urllib.request import urlopen
 P=pathlib.Path("/opt/teltest/repo")
 G=pathlib.Path("/var/lib/teltest-eitaa-gateway/runtime-v1/src/MainExpress.ts")
 HERE=pathlib.Path(__file__).resolve().parent
-FILES=("provider_destinations.py","eitaa_user_bridge.py","eitaa_live_gateway.py")
+FILES=("provider_destinations.py","eitaa_user_bridge.py","eitaa_live_gateway.py","delivery_queue.py")
 MARKER="TELTEST_EITAA_PRODUCTION_MEDIA_V1"
 BACKUP=pathlib.Path("/opt/teltest/backups/eitaa-production-media")
+DROPIN=pathlib.Path("/etc/systemd/system/teltest-delivery.service.d/90-eitaa-production-media.conf")
 READ_MARK="        // TELTEST_EITAA_VIDEO_READ_SCOPE_V1"
 FILE_MARK="        // TELTEST_EITAA_VIDEO_FIRST_CHUNK_V1"
 NEW_READ=r"""        // TELTEST_EITAA_PRODUCTION_MEDIA_V1_READ
@@ -85,7 +86,7 @@ def replace_block(s,start_token,new):
     must(end>pos and end-pos<4000,"GATEWAY_SCOPE_END_MISSING")
     return s[:pos]+new+s[end+len("        });"):]
 def patched(src):
-    a,b,c=(src[x] for x in FILES)
+    a,b,c,q=(src[x] for x in FILES)
     g=src["MainExpress.ts"]
     for token in ("// TELTEST_EITAA_GATEWAY_ACCESS_CONTROL_V1",
                   "// TELTEST_EITAA_VIDEO_READ_SCOPE_V1",
@@ -176,10 +177,21 @@ async def download_eitaa_media(url, tmp_dir, media_index, source_post=None, medi
     old="gateway('messages/sendMedia',payload,timeout=180)"
     must(c.count(old)==1,"MEDIA_TIMEOUT_ANCHOR_CHANGED")
     c=c.replace(old,"gateway('messages/sendMedia',payload,timeout=1800)",1)
-    for n,src in (("provider_destinations.py",a),("eitaa_user_bridge.py",b),("eitaa_live_gateway.py",c)):
+    # Larger Eitaa videos need longer than the legacy 45-second batch deadline.
+    # Limit Job11 to three items per invocation to preserve inter-item pacing.
+    q_anchor="def process_job(job_id, telegram_client, account_get, max_items=10, budget=45):"
+    must(q.count(q_anchor)==1,"DELIVERY_PROCESS_ENTRYPOINT_CHANGED")
+    q=q.replace(q_anchor,q_anchor+'''
+    # TELTEST_EITAA_PRODUCTION_MEDIA_V1 queue execution limits
+    if job_id == 11:
+        max_items = min(max_items, 3)
+        budget = max(budget, 1800)
+''',1)
+    for n,src in (("provider_destinations.py",a),("eitaa_user_bridge.py",b),
+                  ("eitaa_live_gateway.py",c),("delivery_queue.py",q)):
         ast.parse(src,filename=n)
     return {"provider_destinations.py":a,"eitaa_user_bridge.py":b,
-            "eitaa_live_gateway.py":c,"MainExpress.ts":g}
+            "eitaa_live_gateway.py":c,"delivery_queue.py":q,"MainExpress.ts":g}
 def write(path,text,mode):
     fd,tmp=tempfile.mkstemp(prefix="."+path.name+".",dir=path.parent)
     try:
@@ -225,6 +237,7 @@ def main():
         backup.mkdir(parents=True,mode=0o700,exist_ok=False)
         module=P/"eitaa_authenticated_media.py"
         must(not module.exists(),"MEDIA_MODULE_ALREADY_EXISTS")
+        must(not DROPIN.exists() and not DROPIN.is_symlink(),"WORKER_SERVICE_OVERRIDE_ALREADY_EXISTS")
         oldstats={n:p.stat() for n,p in mapping.items()}
         for name,p in mapping.items():shutil.copy2(p,backup/name)
         touched=[]
@@ -242,6 +255,12 @@ def main():
                 os.replace(tmp,module)
             finally:
                 if os.path.exists(tmp):os.unlink(tmp)
+            # Workers may spend minutes downloading and posting a large video.
+            # The old 4-minute systemd start deadline is not sufficient.
+            DROPIN.parent.mkdir(parents=True,exist_ok=True)
+            DROPIN.write_text("[Service]\nTimeoutStartSec=45min\n",encoding="utf8")
+            os.chmod(DROPIN,0o644)
+            must(run("systemctl","daemon-reload").returncode==0,"SYSTEMD_DAEMON_RELOAD_FAILED")
             for service in ("teltest-eitaa-gateway.service","teltest.service"):
                 must(run("systemctl","restart",service,timeout=90).returncode==0,"RESTART_FAILED")
             must(health(),"POST_DEPLOY_HEALTH_FAILED")
@@ -255,6 +274,8 @@ def main():
                 try:write(mapping[n],before[n],oldstats[n])
                 except Exception:pass
             module.unlink(missing_ok=True)
+            DROPIN.unlink(missing_ok=True)
+            run("systemctl","daemon-reload")
             for svc in ("teltest-eitaa-gateway.service","teltest.service"):
                 run("systemctl","restart",svc,timeout=90)
             print("ROLLBACK_ATTEMPTED_BACKUP="+str(backup))
