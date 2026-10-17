@@ -57,6 +57,17 @@ jobs:
               if name=='delivery_queue.py':
                   i=s.find('def enqueue(')
                   if i>=0:print('EXTRACT enqueue',s[i:i+2300])
+          ui=(root/'static/operations-center.js').read_text()
+          pos=ui.find('workspace.scrollIntoView({ behavior: "smooth", block: "start" });')
+          if pos>=0:
+              print('UI_TRANSFER_WORKSPACE_BEGIN')
+              print(ui[max(0,pos-1100):pos+8500])
+              print('UI_TRANSFER_WORKSPACE_END')
+          tpl=(root/'templates/dashboard.html').read_text()
+          for term in ('transferWorkspace','operations-center.js'):
+              ix=tpl.find(term)
+              if ix>=0:
+                  print('TEMPLATE_CONTEXT',term,repr(tpl[max(0,ix-600):ix+1300]))
           for p in sorted(root.rglob('*')):
               if not p.is_file():continue
               rel=str(p.relative_to(root))
