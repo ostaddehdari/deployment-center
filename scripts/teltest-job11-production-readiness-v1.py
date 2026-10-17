@@ -86,6 +86,22 @@ def main():
         known[(category, "EXHAUSTED" if row["attempts"]>=q["max_attempts"] else "RETRY_LEFT")]+=1
     for (category,limit),count in sorted(known.items()):
         print("FAILED_CATEGORY="+category+"/"+limit+":"+str(count))
+    missing_symbols=collections.Counter()
+    for x in db.execute("""
+      SELECT last_error FROM transfer_job_items
+      WHERE transfer_job_id=11 AND status='failed'
+    """):
+        error=str(x["last_error"] or "")
+        # Only the missing Python identifier is printed, never the full error.
+        match=re.search(r"NameError:\s*name\s*['\"]([A-Za-z_][A-Za-z_0-9]{0,80})['\"]\s*is not defined",error)
+        if not match:
+            match=re.search(r"name\s*['\"]([A-Za-z_][A-Za-z_0-9]{0,80})['\"]\s*is not defined",error)
+        if match:
+            missing_symbols[match.group(1)]+=1
+        elif "NameError" in error:
+            missing_symbols["UNKNOWN_NAMEERROR"]+=1
+    for symbol,count in sorted(missing_symbols.items()):
+        print("FAILED_NAMEERROR_IDENTIFIER="+symbol+":"+str(count))
     receipts=collections.Counter()
     sql="""SELECT p.state AS state, COUNT(*) AS n
        FROM delivery_parts p JOIN transfer_job_items i ON i.id=p.item_id
