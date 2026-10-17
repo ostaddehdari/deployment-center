@@ -1,0 +1,20 @@
+diff --git a/tests/index-authoring-integration.test.cjs b/tests/index-authoring-integration.test.cjs
+--- a/tests/index-authoring-integration.test.cjs
++++ b/tests/index-authoring-integration.test.cjs
+@@ -49,9 +49,13 @@
+ });
+ 
+ test('dependent taxonomies filter by parent and personal child creation keeps ownership parent',()=>{
+- assert.match(panel,/code==='IDX-006'\?'IDX-005'/);
+- assert.match(panel,/code==='IDX-008'\?'IDX-007'/);
+- assert.match(panel,/code==='IDX-010'\?'IDX-009'/);
++ assert.match(indexService,/parentMap:Record<string,string>/);
++ assert.match(indexService,/'IDX-006':'IDX-005'/);
++ assert.match(indexService,/'IDX-008':'IDX-007'/);
++ assert.match(indexService,/'IDX-010':'IDX-009'/);
++ assert.match(panel,/f\.parentTaxonomyCode/);
++ assert.match(panel,/:parent="parentFor\(f\)"/);
++ assert.match(panel,/:personal-parent-option="personalParentFor\(f\)"/);
+  assert.match(personal,/parentSystemTermId/);
+  assert.match(personal,/parentUserTermId/);
+  assert.match(panel,/personal-parent-option="a\.topic"/);
