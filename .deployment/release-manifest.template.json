@@ -1,0 +1,16 @@
+{
+  "project_id":"zohaonline",
+  "release_tag":"zohaonline-v0.4.0",
+  "version":"0.4.0",
+  "release_type":"hybrid-gravity-runtime-index-builder",
+  "source_of_truth":"GitLab vendors/zoha/zoha",
+  "distribution":"GitHub Deployment Center",
+  "base_release":"zohaonline-v0.3.7",
+  "base_gitlab_sha":"eb140a90aa78b4b92f4443a94591af415fd36392",
+  "target_path":"/var/www/zoha",
+  "artifact":"zohaonline-v0.4.0.zip",
+  "artifact_sha256":"__ASSET_SHA256__",
+  "installer":"install.sh",
+  "installer_sha256":"__INSTALL_SHA256__",
+  "payload_sha256":"cb67d4ae1634f262f3ec09c78c053e3160caa3672d56e6f2019bb223bcf39a2a"
+}
