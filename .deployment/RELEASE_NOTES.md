@@ -1,12 +1,22 @@
-# ZohaOnline v0.4.7 — Newline-Safe Contract Patch
+# ZohaOnline v0.4.8 — Dynamic Parent Ownership Contract
 
-v0.4.6 reached the contract patch validation stage but GNU git rejected the secondary patch with:
-`error: corrupt patch at line 20`.
+v0.4.7 passed patch verification and applied both patches, then rolled back
+before builds, commits, database migration, or service restart. One remaining
+source contract expected the old direct `a.topic` binding; the dynamic renderer
+now receives `selection(a.topic)`.
 
-The root cause was the contract patch file ending immediately after the final hunk line with no trailing newline. The hunk counts themselves were correct.
+This release updates that assertion and checks the complete forwarding chain:
+topic selection, dynamic field, personal selector, and separate system/personal
+parent IDs. No application behavior is changed relative to the v0.4.7 candidate.
+The main v0.4.4 source patch is unchanged.
 
-v0.4.7 creates a fresh contract patch with a proper final newline, verifies its exact SHA256
-`cbee7c6835e9578fecb9525bb7519562311d3bbba52330fd0df610c69e027228`,
-then runs `git apply --check` before applying either release patch.
+Local verification uses the collected source at the exact installer base commit
+`eb140a90aa78b4b92f4443a94591af415fd36392`: both patches apply cleanly, the
+reported stale assertion is reproduced, and selection/filter/ownership behavior
+is exercised for system parents, personal parents, single/array values, empty
+values, and missing parents. The corrected complete parent contract is executed.
 
-No project source or database changes were made by v0.4.6 because it stopped during patch validation.
+The collected archive is a partial source snapshot. The complete contract suite,
+API build, Nuxt build, GitLab push, database backup/migration and live service
+checks must still pass on the target server before installation is successful.
+All existing installer gates are retained.

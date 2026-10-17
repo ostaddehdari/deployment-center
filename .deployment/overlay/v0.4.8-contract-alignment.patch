@@ -1,0 +1,31 @@
+diff --git a/tests/index-authoring-integration.test.cjs b/tests/index-authoring-integration.test.cjs
+--- a/tests/index-authoring-integration.test.cjs
++++ b/tests/index-authoring-integration.test.cjs
+@@ -49,12 +49,23 @@
+ });
+ 
+ test('dependent taxonomies filter by parent and personal child creation keeps ownership parent',()=>{
+- assert.match(panel,/code==='IDX-006'\?'IDX-005'/);
+- assert.match(panel,/code==='IDX-008'\?'IDX-007'/);
+- assert.match(panel,/code==='IDX-010'\?'IDX-009'/);
++ assert.match(indexService,/parentMap:Record<string,string>/);
++ assert.match(indexService,/'IDX-006':'IDX-005'/);
++ assert.match(indexService,/'IDX-008':'IDX-007'/);
++ assert.match(indexService,/'IDX-010':'IDX-009'/);
++ assert.match(panel,/f\.parentTaxonomyCode/);
++ assert.match(panel,/:parent="parentFor\(f\)"/);
++ assert.match(panel,/:personal-parent-option="personalParentFor\(f\)"/);
+  assert.match(personal,/parentSystemTermId/);
+  assert.match(personal,/parentUserTermId/);
+- assert.match(panel,/personal-parent-option="a\.topic"/);
++ assert.match(indexService,/'IDX-002':'IDX-001'/);
++ assert.match(panel,/:parent="selectionTitle\(a\.topic\)"/);
++ assert.match(panel,/:personal-parent-option="selection\(a\.topic\)"/);
++ const dynamic=read('apps/web/components/indexing/IndexDynamicField.vue');
++ assert.match(dynamic,/:parent="parent"/);
++ assert.match(dynamic,/:personal-parent-option="personalParentOption"/);
++ assert.match(personal,/parent\?\.scope==='system'\?parent\.id:undefined/);
++ assert.match(personal,/parent\?\.scope==='personal'\?parent\.id:undefined/);
+ });
+ 
+ test('legacy carrier label is replaced by subtopic in authoring UI',()=>{

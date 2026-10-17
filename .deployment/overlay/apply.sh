@@ -8,7 +8,7 @@ BRANCH_EXPECTED="feature/zoha-public-site-v1"
 
 cd "$ROOT"
 
-echo "========== ZOHAONLINE v0.4.7 / DIRECT HYBRID BUILDER CONTRACT ALIGNMENT =========="
+echo "========== ZOHAONLINE v0.4.8 / DIRECT HYBRID BUILDER CONTRACT ALIGNMENT =========="
 [ -d .git ] || { echo "ERROR: $ROOT is not a git repository"; exit 2; }
 BRANCH="$(git branch --show-current)"
 [ "$BRANCH" = "$BRANCH_EXPECTED" ] || { echo "ERROR: unexpected branch=$BRANCH"; exit 3; }
@@ -21,8 +21,8 @@ if ! git diff --cached --quiet; then echo "ERROR: pre-existing staged changes de
 echo "========== VERIFY DIRECT PATCH =========="
 PATCH="$PKG/zohaonline-v0.4.4.patch"
 PATCH_SHA="b80bbbdac908c434bf2db1588640db3c6fb2258bd7c668fdac8b84e379ccd58f"
-CONTRACT_PATCH="$PKG/v0.4.7-contract-alignment.patch"
-CONTRACT_PATCH_SHA="cbee7c6835e9578fecb9525bb7519562311d3bbba52330fd0df610c69e027228"
+CONTRACT_PATCH="$PKG/v0.4.8-contract-alignment.patch"
+CONTRACT_PATCH_SHA="c9d2592913c0c4ffe24e77c843e2759bff775667970abe88ed40179e58d81397"
 [ -f "$PATCH" ] || { echo "ERROR: missing release patch $PATCH"; exit 7; }
 echo "$PATCH_SHA  $PATCH" | sha256sum -c -
 git apply --check "$PATCH"
@@ -49,12 +49,12 @@ FILES=(
 
 OWNED_DIRTY="$(git status --porcelain -- "${FILES[@]}")"
 if [ -n "$OWNED_DIRTY" ]; then
-  echo "ERROR: pre-existing changes detected in v0.4.7-owned paths; refusing to overwrite."
+  echo "ERROR: pre-existing changes detected in v0.4.8-owned paths; refusing to overwrite."
   printf '%s\n' "$OWNED_DIRTY"
   exit 7
 fi
 
-BACKUP="/root/zoha-v047-source-backup-$(date +%Y%m%d-%H%M%S)"
+BACKUP="/root/zoha-v048-source-backup-$(date +%Y%m%d-%H%M%S)"
 ABSENT_LIST="$BACKUP/.absent"
 mkdir -p "$BACKUP"
 : > "$ABSENT_LIST"
@@ -128,8 +128,8 @@ echo "SOURCE_VERIFY=PASS"
 
 echo "========== COMMIT RELEASE FILES ONLY =========="
 git add -- "${FILES[@]}"
-if git diff --cached --quiet; then echo "ERROR: no v0.4.7 source changes staged"; exit 9; fi
-git -c user.name='ostaddehdari' -c user.email='ostaddehdari@users.noreply.git.mtacloud.ir' commit -m 'نمایه‌ساز حرفه‌ای: هم‌راستاسازی قرارداد والد با Runtime نسخه‌دار'
+if git diff --cached --quiet; then echo "ERROR: no v0.4.8 source changes staged"; exit 9; fi
+git -c user.name='ostaddehdari' -c user.email='ostaddehdari@users.noreply.git.mtacloud.ir' commit -m 'نمایه‌ساز حرفه‌ای: اصلاح قرارداد و بررسی انتقال والد عمومی و شخصی در فرم پویا'
 LOCAL_SHA="$(git rev-parse HEAD)"
 COMMITTED=1
 
@@ -141,7 +141,7 @@ echo "GITLAB_PUSH_VERIFIED=$REMOTE_SHA"
 
 echo "========== BACKUP INDEX FORM DATABASE =========="
 export PGPASSWORD="$(cat /etc/zoha-online/postgres-password)"
-DB_BACKUP="/root/zoha-v047-index-form-data-$(date +%Y%m%d-%H%M%S).sql"
+DB_BACKUP="/root/zoha-v048-index-form-data-$(date +%Y%m%d-%H%M%S).sql"
 pg_dump -h 127.0.0.1 -p 5433 -U zoha_app -d zoha_core --data-only --inserts \
  --table=zoha.index_forms \
  --table=zoha.index_form_versions \
@@ -219,4 +219,4 @@ echo "BRANCH=$BRANCH"
 echo "GITLAB_SHA=$REMOTE_SHA"
 echo "SOURCE_BACKUP=$BACKUP"
 echo "DB_BACKUP=$DB_BACKUP"
-echo "ZOHAONLINE_HYBRID_INDEX_BUILDER_V047=PASS"
+echo "ZOHAONLINE_HYBRID_INDEX_BUILDER_V048=PASS"
