@@ -1,15 +1,12 @@
-# ZohaOnline v0.4.6 — Direct Contract Patch Verification
+# ZohaOnline v0.4.7 — Newline-Safe Contract Patch
 
-v0.4.5 stopped safely before backup/apply because the small contract-alignment patch had a brittle hard-coded inner SHA256 mismatch. The outer release ZIP had already passed its official SHA256 verification.
+v0.4.6 reached the contract patch validation stage but GNU git rejected the secondary patch with:
+`error: corrupt patch at line 20`.
 
-v0.4.6 removes only that fragile inner checksum for the contract patch. Safety remains stronger than needed:
-- the complete official release ZIP is verified against published SHA256SUMS before extraction;
-- the main v0.4.4 source patch keeps its own exact SHA256 verification;
-- the contract patch must exist and must pass `git apply --check`;
-- both patches are applied only after those checks;
-- all focused contracts and the complete contract suite run before commit;
-- API and clean Nuxt builds run before commit;
-- release-owned source is automatically rolled back on any pre-commit failure;
-- GitLab push, DB backup, migration 180, runtime binding counts, service restart, and Nuxt asset smoke remain mandatory.
+The root cause was the contract patch file ending immediately after the final hunk line with no trailing newline. The hunk counts themselves were correct.
 
-No project/database change was made by v0.4.5 because it stopped during patch verification.
+v0.4.7 creates a fresh contract patch with a proper final newline, verifies its exact SHA256
+`cbee7c6835e9578fecb9525bb7519562311d3bbba52330fd0df610c69e027228`,
+then runs `git apply --check` before applying either release patch.
+
+No project source or database changes were made by v0.4.6 because it stopped during patch validation.
