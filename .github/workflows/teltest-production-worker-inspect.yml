@@ -1,0 +1,64 @@
+name: Inspect published TelTest live worker source (read-only)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/teltest-production-worker-inspect.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-live-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve checksum-verified public TelTest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/live
+          gh release download teltest-v0.12.2-live.20261016.2 \
+            --repo ostaddehdari/deployment-center \
+            --pattern 'teltest-v0.12.2-live.20261016.2.zip' \
+            --pattern 'SHA256SUMS' \
+            --dir /tmp/live
+          echo '6f42f8c158abb462c4828cd5b4eba47f63280273a4902c8c52b0c664a047ed19  /tmp/live/teltest-v0.12.2-live.20261016.2.zip' | sha256sum -c -
+          unzip -q /tmp/live/teltest-v0.12.2-live.20261016.2.zip -d /tmp/live/extracted
+      - name: Report code structure and media integration boundaries
+        run: |
+          python3 - <<'PY'
+          import ast,pathlib,re
+          d=pathlib.Path('/tmp/live/extracted/app')
+          files=('delivery_worker.py','delivery_queue.py','provider_destinations.py',
+                 'eitaa_user_bridge.py','eitaa_live_gateway.py','job_engine.py')
+          for fn in files:
+              p=d/fn
+              print('=== MODULE',fn, 'EXISTS',p.exists(),'===')
+              if not p.exists():continue
+              s=p.read_text('utf8')
+              tree=ast.parse(s)
+              for n in tree.body:
+                  if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)):
+                      name=n.name
+                      ar=[a.arg for a in n.args.args] if hasattr(n,'args') else []
+                      print('FUNCTION',name,'ARGS',','.join(ar),'LINES',n.lineno,n.end_lineno)
+              for n in ast.walk(tree):
+                  if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and (
+                    re.search(r'media|download|send|transfer|execute|job|retry|queue|deliver|destination',n.name,re.I)
+                    or fn == 'delivery_worker.py' and n.lineno <= 180
+                  ):
+                      print('---',fn,n.name,n.lineno,'---')
+                      seg=ast.get_source_segment(s,n)
+                      if not seg:continue
+                      lines=seg.splitlines()
+                      for ln in lines[:95]:
+                          # avoid accidentally exposing hard-coded access tokens.
+                          ln=re.sub(r'(?:gh[psu]_|sk-|xox[baprs]-)[A-Za-z0-9_-]{15,}', '[REDACTED_TOKEN]',ln)
+                          ln=re.sub(r'(?i)((?:password|api_key|bot_token|secret)\\s*=\\s*["\\x27])[^"\\x27]{4,}',r'\\1[REDACTED]',ln)
+                          print(ln)
+                      if len(lines)>95:print('... TRUNCATED ...',len(lines))
+          PY

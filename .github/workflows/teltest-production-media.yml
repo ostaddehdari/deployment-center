@@ -1,0 +1,61 @@
+name: TelTest production Eitaa media integration
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/eitaa_authenticated_media.py'
+      - 'scripts/teltest-eitaa-production-media-v1.py'
+      - 'tests/test_teltest_production_eitaa_media_v1.py'
+      - '.github/workflows/teltest-production-media.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Source syntax and offline safety unit tests
+        run: |
+          python3 -m py_compile scripts/eitaa_authenticated_media.py scripts/teltest-eitaa-production-media-v1.py scripts/teltest-job11-reconcile-confirmed-7084-v1.py scripts/teltest-job11-production-readiness-v1.py
+          python3 -m unittest discover -s tests -p test_teltest_production_eitaa_media_v1.py -v
+      - name: Validate patches against released live TelTest code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/teltest-prod-audit
+          gh release download teltest-v0.12.2-live.20261016.2 \
+            --repo ostaddehdari/deployment-center \
+            --pattern 'teltest-v0.12.2-live.20261016.2.zip' \
+            --dir /tmp/teltest-prod-audit
+          echo '6f42f8c158abb462c4828cd5b4eba47f63280273a4902c8c52b0c664a047ed19  /tmp/teltest-prod-audit/teltest-v0.12.2-live.20261016.2.zip' | sha256sum -c -
+          unzip -q /tmp/teltest-prod-audit/teltest-v0.12.2-live.20261016.2.zip -d /tmp/teltest-prod-audit/extracted
+          python3 - <<'PY'
+          import sys,ast,pathlib
+          sys.path.insert(0,'scripts')
+          import importlib.util
+          p=pathlib.Path('scripts/teltest-eitaa-production-media-v1.py')
+          spec=importlib.util.spec_from_file_location('patcher',p)
+          m=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          root=pathlib.Path('/tmp/teltest-prod-audit/extracted/app')
+          real={n:(root/n).read_text('utf8') for n in m.FILES}
+          real['MainExpress.ts']=(
+           "// TELTEST_EITAA_GATEWAY_ACCESS_CONTROL_V1\n"
+           "// TELTEST_EITAA_VIDEO_7084_20_CHUNKS_V1\n"
+           "const timingSafeEqual = true;\n"
+           "app.listen(port, '127.0.0.1',()=>{});\n"
+           "        // TELTEST_EITAA_VIDEO_READ_SCOPE_V1\n"
+           "        app.use('/eitaa/messages/read',(req,res,next)=>{next();\n        });\n"
+           "        // TELTEST_EITAA_VIDEO_FIRST_CHUNK_V1\n"
+           "        app.use('/eitaa/messages/getFile',(req,res,next)=>{next();\n        });\n"
+          )
+          new=m.patched(real)
+          for n in m.FILES:ast.parse(new[n],filename=n)
+          print('RELEASE_SOURCE_PATCHES_VALIDATED',len(new))
+          PY
