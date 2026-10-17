@@ -22,7 +22,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           source .deployment/release.env
-          if [ -n "${BASE_RELEASE_TAG:-}" ]; then
+          if [ "${DIRECT_RELEASE:-0}" = "1" ]; then
+            mkdir -p /tmp/release-stage
+            cp -a .deployment/overlay/. /tmp/release-stage/
+            chmod +x /tmp/release-stage/apply.sh 2>/dev/null || true
+            (cd /tmp/release-stage && zip -qr "/tmp/${ASSET_NAME}" .)
+          elif [ -n "${BASE_RELEASE_TAG:-}" ]; then
             mkdir -p /tmp/release-stage
             curl --fail --location --retry 3 \
               "https://github.com/${GITHUB_REPOSITORY}/releases/download/${BASE_RELEASE_TAG}/${BASE_ASSET_NAME}" \
