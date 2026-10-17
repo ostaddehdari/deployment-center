@@ -1,19 +1,15 @@
 {
   "project_id": "zohaonline",
-  "version": "0.5.0",
-  "release_tag": "zohaonline-v0.5.0",
-  "release_type": "gravity-toolbox",
-  "source_of_truth": "GitLab vendors/zoha/zoha",
-  "distribution": "GitHub Deployment Center",
-  "base_gitlab_sha": "eb140a90aa78b4b92f4443a94591af415fd36392",
+  "version": "0.5.1",
+  "release_tag": "zohaonline-v0.5.1",
+  "release_type": "resume-postgresql-backup",
+  "source_commit_required": "a6188cd58bdbf68865f37dab78f6f5b1dc4efb27",
   "target_path": "/var/www/zoha",
-  "artifact": "zohaonline-v0.5.0.zip",
+  "artifact": "zohaonline-v0.5.1.zip",
   "artifact_sha256": "__ASSET_SHA256__",
   "installer": "install.sh",
   "installer_sha256": "__INSTALL_SHA256__",
-  "source_patch_sha256": "f771ace1d490554d8a2884302401e7bf7bae821116f43cc66d2c44c6357531cb",
-  "toolbox_fields": 43,
-  "local_tests": 20,
-  "browser_checks": 13,
-  "full_server_validation": "required during installation"
+  "local_tests": 6,
+  "resume_flow_test": "passed with simulated commands",
+  "requires_target_server_execution": true
 }
