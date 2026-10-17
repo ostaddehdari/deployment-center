@@ -187,6 +187,23 @@ async def download_eitaa_media(url, tmp_dir, media_index, source_post=None, medi
         max_items = min(max_items, 3)
         budget = max(budget, 1800)
 ''',1)
+    # Older Job11 failures all raised NameError: eitaa_progress.
+    # Preserve the V7 hotfix if present; otherwise install a safe logger.
+    def _has_global_progress(source):
+        return any(isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef))
+                   and node.name == "eitaa_progress"
+                   for node in ast.parse(source).body)
+    if not _has_global_progress(a):
+        a += """
+# TELTEST_EITAA_PRODUCTION_MEDIA_V1_PROGRESS
+def eitaa_progress(job_id, item_id, event, message):
+    try:
+        from operations_center import log_job
+        log_job('transfer', job_id, event, f'آیتم #{item_id}: {message}')
+    except Exception:
+        pass
+"""
+    must(_has_global_progress(a),"EITAA_PROGRESS_NAMEERROR_NOT_FIXED")
     for n,src in (("provider_destinations.py",a),("eitaa_user_bridge.py",b),
                   ("eitaa_live_gateway.py",c),("delivery_queue.py",q)):
         ast.parse(src,filename=n)
