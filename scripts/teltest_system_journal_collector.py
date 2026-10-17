@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import grp
 import os
 from pathlib import Path
 import re
@@ -78,14 +79,15 @@ def run():
     payload={"snapshot_at": datetime.now(timezone.utc).isoformat(),
              "events":events[-100:],"journalctl_ok":result.returncode==0}
     DEST.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
-    os.chown(DEST.parent,0,33) # Debian/Ubuntu www-data group GID 33
+    group=grp.getgrnam('www-data').gr_gid
+    os.chown(DEST.parent,0,group)
     os.chmod(DEST.parent,0o750)
     fd,path=tempfile.mkstemp(dir=DEST.parent,prefix=".snapshot.")
     try:
         with os.fdopen(fd,"w",encoding="utf-8") as out:
             json.dump(payload,out,ensure_ascii=False)
             out.flush();os.fsync(out.fileno())
-        os.chown(path,0,33)
+        os.chown(path,0,group)
         os.chmod(path,0o640)
         os.replace(path,DEST)
     finally:
