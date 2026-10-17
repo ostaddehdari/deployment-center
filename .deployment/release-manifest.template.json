@@ -1,0 +1,17 @@
+{
+  "project_id":"zohaonline",
+  "release_tag":"zohaonline-v0.4.4",
+  "version":"0.4.4",
+  "release_type":"direct-hybrid-gravity-runtime-builder",
+  "source_of_truth":"GitLab vendors/zoha/zoha",
+  "distribution":"GitHub Deployment Center",
+  "base_gitlab_sha":"eb140a90aa78b4b92f4443a94591af415fd36392",
+  "source_snapshot_sha256":"ae2fc00e08de67759e887ae610b0a063a36fdd48a0f90ef7caa4541cfc32700b",
+  "target_path":"/var/www/zoha",
+  "artifact":"zohaonline-v0.4.4.zip",
+  "artifact_sha256":"__ASSET_SHA256__",
+  "installer":"install.sh",
+  "installer_sha256":"__INSTALL_SHA256__",
+  "packaging":"direct-unified-patch-no-nested-payload",
+  "patch_sha256":"b80bbbdac908c434bf2db1588640db3c6fb2258bd7c668fdac8b84e379ccd58f"
+}
