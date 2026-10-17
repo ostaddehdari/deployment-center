@@ -61,6 +61,11 @@ def main():
     print("JOB11_PAUSE_REQUESTED="+str(q["pause_requested"]))
     print("JOB11_INTERVAL_SECONDS="+str(q["interval_seconds"]))
     print("JOB11_MAX_ATTEMPTS="+str(q["max_attempts"]))
+    other=db.execute("""
+       SELECT COUNT(*) FROM delivery_queue
+       WHERE job_id<>11 AND (state='running' OR (state='queued' AND pause_requested=0))
+    """).fetchone()[0]
+    print("OTHER_ACTIVE_OR_READY_JOBS="+str(other))
     print("ITEM_TOTAL="+str(db.execute("SELECT COUNT(*) FROM transfer_job_items WHERE transfer_job_id=11").fetchone()[0]))
     for row in db.execute("SELECT status,COUNT(*) AS count FROM transfer_job_items WHERE transfer_job_id=11 GROUP BY status ORDER BY status"):
         print("ITEM_STATUS_"+str(row["status"]).upper()+"="+str(row["count"]))
