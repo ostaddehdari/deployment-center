@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 REPO="ostaddehdari/deployment-center"
-TAG="zohaonline-v0.4.4"
-ASSET="zohaonline-v0.4.4.zip"
+TAG="zohaonline-v0.4.5"
+ASSET="zohaonline-v0.4.5.zip"
 TARGET="${1:-/var/www/zoha}"
-TMP="$(mktemp -d /tmp/zohaonline-v0.4.4.XXXXXX)"
+TMP="$(mktemp -d /tmp/zohaonline-v0.4.5.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 BASE="https://github.com/${REPO}/releases/download/${TAG}"
 curl --fail --location --retry 3 "$BASE/SHA256SUMS" -o "$TMP/SHA256SUMS"
