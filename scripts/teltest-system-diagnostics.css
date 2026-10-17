@@ -1,0 +1,81 @@
+/* TelTest integrated job + system diagnostics, RTL, responsive */
+.teltest-syslog {
+  margin: 22px 0 16px;
+  padding: 18px;
+  border: 1px solid rgba(128,148,178,.30);
+  border-radius: 16px;
+  background: color-mix(in srgb,var(--surface,#fff) 94%,#7184a8 6%);
+  direction: rtl;
+  font-family: inherit;
+}
+.teltest-syslog > header {
+  display:flex;
+  gap:16px;
+  justify-content:space-between;
+  align-items:center;
+  flex-wrap:wrap;
+  margin-bottom:14px;
+}
+.teltest-syslog h3 { margin:0; font-size:1.02rem; }
+.teltest-syslog h4 { margin:18px 0 8px; font-size:.94rem; }
+.teltest-syslog .ttsys-diagnosis {
+  display:block;
+  padding:12px 14px;
+  background:rgba(33,92,165,.09);
+  border-inline-start:3px solid #447dc2;
+  border-radius:8px;
+  font-weight:700;
+  line-height:1.9;
+}
+.ttsys-report > p {line-height:2; font-size:.87rem; overflow-wrap:anywhere;}
+.ttsys-services {
+  display:grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin:9px 0 16px;
+}
+.ttsys-services > div {
+  border:1px solid rgba(128,148,178,.27);
+  border-radius:10px;
+  padding:12px;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:7px;
+  font-size:.86rem;
+}
+.ttsys-services b[data-state="active"] {color:#23855c;}
+.ttsys-services b[data-state="inactive"],
+.ttsys-services b[data-state="failed"] {color:#b35035;}
+.teltest-syslog details {
+  border:1px solid rgba(128,148,178,.25);
+  border-radius:10px;
+  margin:12px 0;
+  overflow:hidden;
+}
+.teltest-syslog summary {cursor:pointer;padding:13px 15px;font-weight:650;user-select:none;}
+.ttsys-lines {
+  max-height:370px;
+  overflow:auto;
+  padding:4px 13px 13px;
+}
+.ttsys-lines p {
+  display:grid;
+  grid-template-columns:minmax(190px,.32fr) minmax(0,1fr);
+  gap:9px;
+  padding:10px 4px;
+  border-top:1px solid rgba(128,148,178,.18);
+  line-height:1.75;
+  overflow-wrap:anywhere;
+  margin:0;
+  font-size:.82rem;
+}
+.ttsys-lines small {font-size:.74rem;opacity:.72;direction:ltr;text-align:left;unicode-bidi:plaintext;}
+.ttsys-report > small {display:block;opacity:.7;margin:14px 0 7px;}
+@media(max-width:750px) {
+  .teltest-syslog {padding:12px;}
+  .ttsys-services {grid-template-columns:repeat(2,minmax(0,1fr));}
+  .ttsys-lines p {grid-template-columns:1fr;gap:4px;}
+}
+@media(max-width:430px) {.ttsys-services {grid-template-columns:1fr;}}
