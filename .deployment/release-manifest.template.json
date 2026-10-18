@@ -1,20 +1,21 @@
 {
-  "version": "0.6.5",
+  "version": "0.6.6",
   "baseSourceCommit": "d11644e9a01f561120b7ed5e76601f2841d6a806",
-  "asset": "zohaonline-v0.6.5.zip",
+  "asset": "zohaonline-v0.6.6.zip",
   "sha256": "__ASSET_SHA256__",
   "installerSha256": "__INSTALL_SHA256__",
-  "databaseMigration": null,
+  "databaseMigration": "210_index_option_scope",
   "checks": [
-    "global-processing-keys-under-system-topic",
-    "global-processing-keys-under-personal-topic",
-    "parent-specific-options-remain-scoped",
-    "legacy-personal-options-remain-visible",
-    "admin-preview-runtime-parity",
+    "builder-owned-option-scope",
+    "processing-key-parent-remains-topic",
+    "processing-key-options-shared-across-topics",
+    "system-and-personal-topic-runtime-parity",
+    "processing-key-vocabulary-fingerprint-preserved",
+    "three-level-index-hierarchy",
+    "search-menu-close-behaviors",
     "full-contract-tests",
-    "api-production-build",
-    "stable-api-pid",
-    "local-otp-regression-check",
-    "public-otp-regression-check"
+    "clean-api-and-web-builds",
+    "local-and-public-otp-health",
+    "stable-api-and-web-processes"
   ]
 }
