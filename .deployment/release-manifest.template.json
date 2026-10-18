@@ -1,15 +1,18 @@
 {
-  "version": "0.6.1",
+  "version": "0.6.2",
   "baseSourceCommit": "9b317ca2967bb2929d5eeaf042f3cca3522cebf0",
-  "asset": "zohaonline-v0.6.1.zip",
+  "asset": "zohaonline-v0.6.2.zip",
   "sha256": "__ASSET_SHA256__",
   "installerSha256": "__INSTALL_SHA256__",
   "databaseMigration": null,
   "checks": [
-    "api-entry-exists",
-    "api-syntax",
-    "contract-tests",
-    "otp-json-validation",
-    "stable-api-pid"
+    "clean-explicit-typescript-build",
+    "api-entry-exists-and-syntax-valid",
+    "full-contract-tests",
+    "builder-parent-and-depth-database-acceptance",
+    "builder-authoritative-source-acceptance",
+    "local-and-public-otp-json-validation",
+    "stable-api-pid",
+    "index-builder-page-and-assets"
   ]
 }
