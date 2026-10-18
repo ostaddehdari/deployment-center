@@ -1,0 +1,14 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path');
+const root=path.resolve(process.argv[2]),api=path.join(root,'apps/api');
+const ts=require(require.resolve('typescript',{paths:[api]}));
+const configPath=path.join(api,'tsconfig.build.json');
+const parsed=ts.readConfigFile(configPath,ts.sys.readFile);
+if(parsed.error)throw new Error(ts.flattenDiagnosticMessageText(parsed.error.messageText,' '));
+const config=parsed.config;
+config.compilerOptions={...config.compilerOptions,incremental:false,composite:false,tsBuildInfoFile:null,noEmit:false,emitDeclarationOnly:false};
+const packagePath=path.join(api,'package.json'),pkg=JSON.parse(fs.readFileSync(packagePath,'utf8'));
+if(pkg.scripts?.build!=='nest build')throw new Error('Unexpected API build command; refusing to replace it');
+pkg.scripts.build='nest build && node ../../scripts/verify-zoha-api-build.cjs';
+fs.writeFileSync(configPath,JSON.stringify(config,null,2)+'\n');
+fs.writeFileSync(packagePath,JSON.stringify(pkg,null,2)+'\n');

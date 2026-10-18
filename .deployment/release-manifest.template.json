@@ -1,30 +1,15 @@
 {
-  "version": "0.6.0",
-  "baseSourceCommit": "a6188cd58bdbf68865f37dab78f6f5b1dc4efb27",
-  "asset": "zohaonline-v0.6.0.zip",
+  "version": "0.6.1",
+  "baseSourceCommit": "9b317ca2967bb2929d5eeaf042f3cca3522cebf0",
+  "asset": "zohaonline-v0.6.1.zip",
   "sha256": "__ASSET_SHA256__",
-  "installSha256": "__INSTALL_SHA256__",
-  "migration": "200_index_builder_authority",
-  "maxSublevels": 3,
-  "sourceFiles": [
-    "apps/api/src/admin-content-studio/admin-content-studio.service.ts",
-    "apps/api/src/admin-content-studio/admin-runtime-index.controller.ts",
-    "apps/api/src/admin-content-studio/admin-runtime-index.dto.ts",
-    "apps/api/src/admin-content-studio/admin-runtime-index.service.ts",
-    "apps/api/src/admin-content-studio/index-hierarchy.ts",
-    "apps/api/src/index-runtime/index-runtime.controller.ts",
-    "apps/api/src/index-runtime/index-runtime.service.ts",
-    "apps/web/components/indexing/IndexDynamicField.vue",
-    "apps/web/components/indexing/IndexPersonalSelect.vue",
-    "apps/web/components/indexing/IndexRuntimePanel.vue",
-    "apps/web/composables/useAdminRuntimeIndex.ts",
-    "apps/web/composables/useIndexRuntime.ts",
-    "apps/web/pages/admin/index-builder.vue",
-    "apps/web/utils/indexHierarchy.ts",
-    "database-v2/migrations/postgres/200_index_builder_authority.sql",
-    "tests/admin-content-studio.test.cjs",
-    "tests/index-authoring-integration.test.cjs",
-    "tests/index-hierarchy.test.cjs",
-    "tests/real-index-builder.test.cjs"
+  "installerSha256": "__INSTALL_SHA256__",
+  "databaseMigration": null,
+  "checks": [
+    "api-entry-exists",
+    "api-syntax",
+    "contract-tests",
+    "otp-json-validation",
+    "stable-api-pid"
   ]
 }

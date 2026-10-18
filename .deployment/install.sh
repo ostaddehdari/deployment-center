@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-TAG="zohaonline-v0.6.0"
-BASE="https://github.com/ostaddehdari/deployment-center/releases/download/${TAG}"
-WORK="$(mktemp -d /tmp/zohaonline-v0.6.0.XXXXXX)"
+BASE="https://github.com/ostaddehdari/deployment-center/releases/download/zohaonline-v0.6.1"
+WORK="$(mktemp -d /tmp/zohaonline-v0.6.1.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
-curl -fL --retry 3 "$BASE/zohaonline-v0.6.0.zip" -o "$WORK/zohaonline-v0.6.0.zip"
-echo "d6149fda3024ee6c580676845029826316d34f4aa70bdc3fce7b375482cb9055  $WORK/zohaonline-v0.6.0.zip" | sha256sum -c -
-unzip -q "$WORK/zohaonline-v0.6.0.zip" -d "$WORK/package"
+curl -fL --retry 3 "$BASE/zohaonline-v0.6.1.zip" -o "$WORK/zohaonline-v0.6.1.zip"
+echo "6354a9ba71321d4b42c3313cef1c35d9d2c6e5d0fde483f7d24130551bfae87a  $WORK/zohaonline-v0.6.1.zip" | sha256sum -c -
+unzip -q "$WORK/zohaonline-v0.6.1.zip" -d "$WORK/package"
 bash "$WORK/package/apply.sh" "${1:-/var/www/zoha}"
