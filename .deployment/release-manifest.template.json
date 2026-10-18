@@ -1,20 +1,20 @@
 {
-  "version": "0.6.4",
-  "baseSourceCommit": "56f0334749199c4fb651fcf5168166b668b21f9b",
-  "asset": "zohaonline-v0.6.4.zip",
+  "version": "0.6.5",
+  "baseSourceCommit": "d11644e9a01f561120b7ed5e76601f2841d6a806",
+  "asset": "zohaonline-v0.6.5.zip",
   "sha256": "__ASSET_SHA256__",
   "installerSha256": "__INSTALL_SHA256__",
   "databaseMigration": null,
   "checks": [
-    "close-on-repeated-input-click",
-    "close-on-outside-pointer",
-    "close-on-escape",
-    "explicit-close-action",
-    "closed-menu-does-not-reopen-after-selection",
+    "global-processing-keys-under-system-topic",
+    "global-processing-keys-under-personal-topic",
+    "parent-specific-options-remain-scoped",
+    "legacy-personal-options-remain-visible",
+    "admin-preview-runtime-parity",
     "full-contract-tests",
-    "nuxt-production-build",
-    "stable-web-pid",
-    "indexing-page-and-assets",
-    "otp-regression-check"
+    "api-production-build",
+    "stable-api-pid",
+    "local-otp-regression-check",
+    "public-otp-regression-check"
   ]
 }
