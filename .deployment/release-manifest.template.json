@@ -1,11 +1,12 @@
 {
-  "version": "0.6.8",
+  "version": "0.6.9",
   "baseSourceCommit": "v0.6.6-installed-head-verified-dynamically",
-  "asset": "zohaonline-v0.6.8.zip",
+  "asset": "zohaonline-v0.6.9.zip",
   "sha256": "__ASSET_SHA256__",
   "installerSha256": "__INSTALL_SHA256__",
   "databaseMigration": "220_repeatable_index_groups",
   "checks": [
+    "flat-runtime-tests-upgraded-to-recursive-accordion-contract",
     "tracked-content-type-contract-with-format-independent-preflight",
     "generic-repeatable-subtree-setting",
     "nested-topic-and-processing-key-accordions",
