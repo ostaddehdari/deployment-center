@@ -1,0 +1,1159 @@
+diff --git a/apps/api/src/admin-content-studio/admin-content-studio.service.ts b/apps/api/src/admin-content-studio/admin-content-studio.service.ts
+index 249581f61c3a12ae0bfa77e532f308113e63c42a..98406918e715a95ad8b6c2dce74d285458bbed28 100644
+--- a/apps/api/src/admin-content-studio/admin-content-studio.service.ts
++++ b/apps/api/src/admin-content-studio/admin-content-studio.service.ts
+@@ -1,3 +1,5 @@
++import { randomUUID } from 'node:crypto';
++import { hierarchyOrder } from './index-hierarchy';
+ import { HttpStatus, Injectable } from '@nestjs/common';
+ import type { PoolClient } from 'pg';
+ import { DatabaseService } from '../common/database/database.service';
+@@ -176,22 +178,53 @@ export class AdminContentStudioService {
+   }
+ 
+   private async draft(client:PoolClient,id:string):Promise<IndexVersionRow>{
+-    const result=await client.query<IndexVersionRow>(`SELECT v.id,v.version,v.immutable,v.published_at FROM zoha.index_forms f JOIN zoha.index_form_versions v ON v.index_form_id=f.id AND v.version=f.draft_version WHERE f.id=$1 AND f.deleted=false AND f.active=true AND v.deleted=false AND v.active=true LIMIT 1`,[id]);
++    const result=await client.query<IndexVersionRow>(`SELECT v.id,v.version,v.immutable,v.published_at FROM zoha.index_forms f JOIN zoha.index_form_versions v ON v.index_form_id=f.id AND v.version=f.draft_version WHERE f.id=$1 AND f.deleted=false AND f.active=true AND v.deleted=false AND v.active=true LIMIT 1 FOR UPDATE OF f,v`,[id]);
+     const row=result.rows[0];
+     if(!row)throw new DomainException('IndexForm.Draft.NotFound',HttpStatus.NOT_FOUND);
+     if(row.immutable)throw new DomainException('IndexForm.Draft.Immutable',HttpStatus.CONFLICT);
+     return row;
+   }
+ 
++  private async normalizeTree(client:PoolClient,versionId:string):Promise<void>{
++    const rows=await client.query<{id:string;field_key:string;config:Record<string,unknown>}>(`SELECT id,field_key,config FROM zoha.index_form_fields WHERE version_id=$1 AND active AND NOT deleted ORDER BY display_order,id`,[versionId]);
++    try{
++      const nodes=rows.rows.map(f=>({...f,key:f.field_key,parentKey:String((f.config?.hierarchy as Record<string,unknown>|undefined)?.parentKey??'')||null}));
++      const ordered=hierarchyOrder(nodes);
++      for(let i=0;i<ordered.length;i++)await client.query(`UPDATE zoha.index_form_fields SET display_order=$2 WHERE id=$1`,[ordered[i]!.id,(i+1)*10]);
++    }catch(e){throw new DomainException(e instanceof Error?e.message:'IndexField.Hierarchy.Invalid',HttpStatus.BAD_REQUEST)}
++  }
++  private async fieldConfig(client:PoolClient,versionId:string,body:SaveIndexFieldDTO,current?:{field_key:string;config:Record<string,unknown>}):Promise<Record<string,unknown>>{
++    const config={...(body.Config??{})};
++    const previous=(current?.config.runtime??{}) as Record<string,unknown>;
++    const runtime={...((config.runtime??{}) as Record<string,unknown>)};
++    // Vocabulary identity is created by the builder, never selected from an external catalogue.
++    const choices=['select','searchable_select','multiselect','radio','checkbox','tags','image_choice','price_option'].includes(body.InputKind);
++    const vocabulary=choices&&!['image_choice','price_option'].includes(body.InputKind)&&runtime.sourceMode==='runtime_taxonomy';
++    runtime.taxonomyCode=previous.taxonomyCode??(vocabulary?'IDX-B'+randomUUID().replace(/-/g,'').slice(0,16):null);
++    runtime.sourceMode=vocabulary?'runtime_taxonomy':choices?'manual':'none';
++    const parentKey=String((config.hierarchy as Record<string,unknown>|undefined)?.parentKey??'')||null;
++    const parent=parentKey?(await client.query<{config:Record<string,unknown>}>(`SELECT config FROM zoha.index_form_fields WHERE version_id=$1 AND field_key=$2 AND active AND NOT deleted`,[versionId,parentKey])).rows[0]:null;
++    if(parentKey&&!parent)throw new DomainException('نمایه والد در همین فرم وجود ندارد.',HttpStatus.BAD_REQUEST);
++    const parentRuntime=(parent?.config.runtime??{}) as Record<string,unknown>;
++    runtime.parentTaxonomyCode=parentRuntime.taxonomyCode??null;
++    config.runtime=runtime;config.hierarchy={parentKey};config.authority='index-builder';
++    if(runtime.taxonomyCode){
++      await client.query(`INSERT INTO zoha.index_runtime_taxonomies(code,title,field_type,is_multi,allows_personal,metadata) VALUES($1,$2,$3,$4,$5,'{"authority":"index-builder"}'::jsonb) ON CONFLICT(code) DO NOTHING`,[runtime.taxonomyCode,body.Label.trim(),choices?'taxonomy':body.InputKind,['multiselect','checkbox','tags'].includes(body.InputKind),Boolean(runtime.allowsPersonal)]);
++    }
++    return config;
++  }
++
+   async addField(principalInput:Principal|null,formId:string,body:SaveIndexFieldDTO):Promise<Record<string,unknown>>{
+     const principal=this.admin(principalInput);
+     await this.db.transaction(async client=>{
+       const draft=await this.draft(client,formId);
+       const duplicate=await client.query<{id:string}>(`SELECT id FROM zoha.index_form_fields WHERE version_id=$1 AND field_key=$2 AND deleted=false LIMIT 1`,[draft.id,body.Key.trim()]);
+       if(duplicate.rows[0])throw new DomainException('IndexField.KeyExists',HttpStatus.CONFLICT);
++      const config=await this.fieldConfig(client,draft.id,body);
+       const order=await client.query<{value:string}>(`SELECT (COALESCE(max(display_order),0)+10)::text AS value FROM zoha.index_form_fields WHERE version_id=$1 AND deleted=false`,[draft.id]);
+-      const inserted=await client.query<{id:string}>(`INSERT INTO zoha.index_form_fields(version_id,field_key,label,help_text,placeholder,input_kind,value_kind,required,search_enabled,index_enabled,display_order,width,config,validation,created_by,updated_by,active,deleted) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15,$15,true,false) RETURNING id`,[draft.id,body.Key.trim(),body.Label.trim(),body.HelpText?.trim()||null,body.Placeholder?.trim()||null,body.InputKind,body.ValueKind??'string',body.Required??false,body.SearchEnabled??true,body.IndexEnabled??true,Number(order.rows[0]?.value??10),body.Width??100,JSON.stringify(body.Config??{}),JSON.stringify(body.Validation??{}),principal.id]);
++      const inserted=await client.query<{id:string}>(`INSERT INTO zoha.index_form_fields(version_id,field_key,label,help_text,placeholder,input_kind,value_kind,required,search_enabled,index_enabled,display_order,width,config,validation,created_by,updated_by,active,deleted) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15,$15,true,false) RETURNING id`,[draft.id,body.Key.trim(),body.Label.trim(),body.HelpText?.trim()||null,body.Placeholder?.trim()||null,body.InputKind,body.ValueKind??'string',body.Required??false,body.SearchEnabled??true,body.IndexEnabled??true,Number(order.rows[0]?.value??10),body.Width??100,JSON.stringify(config),JSON.stringify(body.Validation??{}),principal.id]);
+       await this.replaceOptions(client,principal.id,inserted.rows[0]!.id,body.Options??[]);
++      await this.normalizeTree(client,draft.id);
+       await client.query(`UPDATE zoha.index_forms SET updated_at=now(),update_at=now(),updated_by=$1 WHERE id=$2`,[principal.id,formId]);
+     });
+     return this.getIndexForm(principal,formId);
+@@ -203,9 +236,14 @@ export class AdminContentStudioService {
+       const draft=await this.draft(client,formId);
+       const duplicate=await client.query<{id:string}>(`SELECT id FROM zoha.index_form_fields WHERE version_id=$1 AND field_key=$2 AND id<>$3 AND deleted=false LIMIT 1`,[draft.id,body.Key.trim(),fieldId]);
+       if(duplicate.rows[0])throw new DomainException('IndexField.KeyExists',HttpStatus.CONFLICT);
+-      const result=await client.query(`UPDATE zoha.index_form_fields SET field_key=$1,label=$2,help_text=$3,placeholder=$4,input_kind=$5,value_kind=$6,required=$7,search_enabled=$8,index_enabled=$9,width=$10,config=$11::jsonb,validation=$12::jsonb,updated_by=$13,updated_at=now(),update_at=now() WHERE id=$14 AND version_id=$15 AND deleted=false`,[body.Key.trim(),body.Label.trim(),body.HelpText?.trim()||null,body.Placeholder?.trim()||null,body.InputKind,body.ValueKind??'string',body.Required??false,body.SearchEnabled??true,body.IndexEnabled??true,body.Width??100,JSON.stringify(body.Config??{}),JSON.stringify(body.Validation??{}),principal.id,fieldId,draft.id]);
++      const current=(await client.query<{field_key:string;config:Record<string,unknown>}>(`SELECT field_key,config FROM zoha.index_form_fields WHERE id=$1 AND version_id=$2 AND NOT deleted`,[fieldId,draft.id])).rows[0];
++      if(!current)throw new DomainException('IndexField.NotFound',HttpStatus.NOT_FOUND);
++      const config=await this.fieldConfig(client,draft.id,body,current);
++      const result=await client.query(`UPDATE zoha.index_form_fields SET field_key=$1,label=$2,help_text=$3,placeholder=$4,input_kind=$5,value_kind=$6,required=$7,search_enabled=$8,index_enabled=$9,width=$10,config=$11::jsonb,validation=$12::jsonb,updated_by=$13,updated_at=now(),update_at=now() WHERE id=$14 AND version_id=$15 AND deleted=false`,[body.Key.trim(),body.Label.trim(),body.HelpText?.trim()||null,body.Placeholder?.trim()||null,body.InputKind,body.ValueKind??'string',body.Required??false,body.SearchEnabled??true,body.IndexEnabled??true,body.Width??100,JSON.stringify(config),JSON.stringify(body.Validation??{}),principal.id,fieldId,draft.id]);
+       if(result.rowCount===0)throw new DomainException('IndexField.NotFound',HttpStatus.NOT_FOUND);
+       await this.replaceOptions(client,principal.id,fieldId,body.Options??[]);
++      if(current.field_key!==body.Key.trim())await client.query(`UPDATE zoha.index_form_fields SET config=jsonb_set(config,'{hierarchy,parentKey}',to_jsonb($3::text)) WHERE version_id=$1 AND config->'hierarchy'->>'parentKey'=$2 AND NOT deleted`,[draft.id,current.field_key,body.Key.trim()]);
++      await this.normalizeTree(client,draft.id);
+       await client.query(`UPDATE zoha.index_forms SET updated_at=now(),update_at=now(),updated_by=$1 WHERE id=$2`,[principal.id,formId]);
+     });
+     return this.getIndexForm(principal,formId);
+@@ -218,13 +256,13 @@ export class AdminContentStudioService {
+ 
+   async removeField(principalInput:Principal|null,formId:string,fieldId:string):Promise<Record<string,unknown>>{
+     const principal=this.admin(principalInput);
+-    await this.db.transaction(async client=>{const draft=await this.draft(client,formId);const result=await client.query(`DELETE FROM zoha.index_form_fields WHERE id=$1 AND version_id=$2`,[fieldId,draft.id]);if(result.rowCount===0)throw new DomainException('IndexField.NotFound',HttpStatus.NOT_FOUND);});
++    await this.db.transaction(async client=>{const draft=await this.draft(client,formId);const child=await client.query(`SELECT id FROM zoha.index_form_fields WHERE version_id=$1 AND config->'hierarchy'->>'parentKey'=(SELECT field_key FROM zoha.index_form_fields WHERE id=$2) AND active AND NOT deleted LIMIT 1`,[draft.id,fieldId]);if(child.rows[0])throw new DomainException('ابتدا زیرشاخه‌ها را جابه‌جا یا حذف کنید.',HttpStatus.CONFLICT);const result=await client.query(`DELETE FROM zoha.index_form_fields WHERE id=$1 AND version_id=$2`,[fieldId,draft.id]);if(result.rowCount===0)throw new DomainException('IndexField.NotFound',HttpStatus.NOT_FOUND);});
+     return this.getIndexForm(principal,formId);
+   }
+ 
+   async reorder(principalInput:Principal|null,formId:string,body:ReorderIndexFieldsDTO):Promise<Record<string,unknown>>{
+     const principal=this.admin(principalInput);
+-    await this.db.transaction(async client=>{const draft=await this.draft(client,formId);for(let i=0;i<body.FieldIds.length;i+=1){await client.query(`UPDATE zoha.index_form_fields SET display_order=$1,updated_by=$2,updated_at=now(),update_at=now() WHERE id=$3 AND version_id=$4`,[(i+1)*10,principal.id,body.FieldIds[i],draft.id]);}});
++    await this.db.transaction(async client=>{const draft=await this.draft(client,formId);for(let i=0;i<body.FieldIds.length;i+=1){await client.query(`UPDATE zoha.index_form_fields SET display_order=$1,updated_by=$2,updated_at=now(),update_at=now() WHERE id=$3 AND version_id=$4`,[(i+1)*10,principal.id,body.FieldIds[i],draft.id]);}await this.normalizeTree(client,draft.id);});
+     return this.getIndexForm(principal,formId);
+   }
+ 
+@@ -232,6 +270,7 @@ export class AdminContentStudioService {
+     const principal=this.admin(principalInput);
+     await this.db.transaction(async client=>{
+       const draft=await this.draft(client,formId);
++      await this.normalizeTree(client,draft.id);
+       const count=await client.query<{value:string}>(`SELECT count(*)::text AS value FROM zoha.index_form_fields WHERE version_id=$1 AND deleted=false AND active=true`,[draft.id]);
+       if(Number(count.rows[0]?.value??0)<1)throw new DomainException('IndexForm.Publish.Empty',HttpStatus.CONFLICT);
+       await client.query(`UPDATE zoha.index_form_versions SET immutable=true,published_at=now(),updated_by=$1,updated_at=now(),update_at=now() WHERE id=$2`,[principal.id,draft.id]);
+@@ -241,6 +280,7 @@ export class AdminContentStudioService {
+       await client.query(`INSERT INTO zoha.index_form_fields(version_id,field_key,label,help_text,placeholder,input_kind,value_kind,required,search_enabled,index_enabled,display_order,width,config,validation,created_by,updated_by,active,deleted) SELECT $1,field_key,label,help_text,placeholder,input_kind,value_kind,required,search_enabled,index_enabled,display_order,width,config,validation,$2,$2,true,false FROM zoha.index_form_fields WHERE version_id=$3 AND deleted=false AND active=true`,[nextId,principal.id,draft.id]);
+       await client.query(`INSERT INTO zoha.index_form_options(field_id,value_key,label,sort_order,is_active,created_by,updated_by,active,deleted) SELECT nf.id,o.value_key,o.label,o.sort_order,o.is_active,$1,$1,true,false FROM zoha.index_form_fields oldf JOIN zoha.index_form_options o ON o.field_id=oldf.id AND o.deleted=false JOIN zoha.index_form_fields nf ON nf.version_id=$2 AND nf.field_key=oldf.field_key WHERE oldf.version_id=$3`,[principal.id,nextId,draft.id]);
+       await client.query(`UPDATE zoha.index_forms SET active_version=$1,draft_version=$2,updated_by=$3,updated_at=now(),update_at=now() WHERE id=$4`,[draft.version,next,principal.id,formId]);
++      await client.query(`SELECT zoha.sync_index_builder_projection($1::uuid)`,[formId]);
+     });
+     return this.getIndexForm(principal,formId);
+   }
+@@ -256,5 +296,6 @@ export class AdminContentStudioService {
+     if(!form.rows[0])throw new DomainException('IndexForm.NotFound',HttpStatus.NOT_FOUND);
+     await client.query(`UPDATE zoha.content_type_index_forms SET is_primary=false,updated_by=$1,updated_at=now(),update_at=now() WHERE content_type_id=$2 AND deleted=false AND active=true`,[userId,contentTypeId]);
+     await client.query(`INSERT INTO zoha.content_type_index_forms(content_type_id,index_form_id,is_primary,created_by,updated_by,active,deleted) VALUES($1,$2,true,$3,$3,true,false) ON CONFLICT(content_type_id,index_form_id) DO UPDATE SET is_primary=true,active=true,deleted=false,updated_by=EXCLUDED.updated_by,updated_at=now(),update_at=now()`,[contentTypeId,indexFormId,userId]);
++    await client.query(`SELECT zoha.sync_index_builder_projection($1::uuid)`,[indexFormId]);
+   }
+ }
+diff --git a/apps/api/src/admin-content-studio/admin-runtime-index.controller.ts b/apps/api/src/admin-content-studio/admin-runtime-index.controller.ts
+index bddab8454e35920930acda5707b3f3d1b9aaf850..f78879ce5e6e90d45307b447ef870c0d28a6b7e5 100644
+--- a/apps/api/src/admin-content-studio/admin-runtime-index.controller.ts
++++ b/apps/api/src/admin-content-studio/admin-runtime-index.controller.ts
+@@ -22,7 +22,7 @@ export class AdminRuntimeIndexController {
+   @Get('preview/schema/:contentType')
+   previewSchema(@Req() request:AppRequest,@Param('contentType') contentType:string){return this.runtime.previewSchema(this.actor(request),contentType);}
+   @Get('preview/taxonomies/:code/options')
+-  previewOptions(@Req() request:AppRequest,@Param('code') code:string,@Query('q') q='',@Query('parent') parent=''){return this.runtime.previewOptions(this.actor(request),code,q,parent);}
++  previewOptions(@Req() request:AppRequest,@Param('code') code:string,@Query('q') q='',@Query('parent') parent='',@Query('parentId') parentId='',@Query('parentScope') parentScope='',@Query('contentType') contentType=''){return this.runtime.previewOptions(this.actor(request),code,q,parent,parentId,parentScope,contentType);}
+ 
+   @Post('post-types/:contentType/fields/:taxonomyCode')
+   assignField(@Req() request:AppRequest,@Param('contentType') contentType:string,@Param('taxonomyCode') taxonomyCode:string){return this.runtime.assignField(this.actor(request),contentType,taxonomyCode);}
+diff --git a/apps/api/src/admin-content-studio/admin-runtime-index.dto.ts b/apps/api/src/admin-content-studio/admin-runtime-index.dto.ts
+index 7bb8d2006700957ddba6f71603ba6268d932bb91..859dc66dd6c26300bdeeab6d7705d3900d126bb4 100644
+--- a/apps/api/src/admin-content-studio/admin-runtime-index.dto.ts
++++ b/apps/api/src/admin-content-studio/admin-runtime-index.dto.ts
+@@ -1,5 +1,5 @@
+ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+-import { IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
++import { IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, Matches } from 'class-validator';
+ 
+ export const RUNTIME_INDEX_FIELD_TYPES=['taxonomy','choice','text','textarea'] as const;
+ 
+@@ -24,6 +24,7 @@ export class ReorderRuntimeFieldsDTO {
+ export class CreateRuntimeTermDTO {
+   @ApiProperty() @IsString() @MaxLength(240) Title!:string;
+   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(240) ParentHint?:string;
++  @ApiPropertyOptional() @IsOptional() @IsString() @Matches(/^[0-9]+$/) ParentId?:string;
+   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(-100000) @Max(100000) SortOrder?:number;
+   @ApiPropertyOptional({type:'object',additionalProperties:true}) @IsOptional() @IsObject() Metadata?:Record<string,unknown>;
+ }
+@@ -31,6 +32,7 @@ export class CreateRuntimeTermDTO {
+ export class UpdateRuntimeTermDTO {
+   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(240) Title?:string;
+   @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(240) ParentHint?:string;
++  @ApiPropertyOptional() @IsOptional() @IsString() @Matches(/^[0-9]+$/) ParentId?:string;
+   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(-100000) @Max(100000) SortOrder?:number;
+   @ApiPropertyOptional() @IsOptional() @IsBoolean() IsActive?:boolean;
+   @ApiPropertyOptional({type:'object',additionalProperties:true}) @IsOptional() @IsObject() Metadata?:Record<string,unknown>;
+diff --git a/apps/api/src/admin-content-studio/admin-runtime-index.service.ts b/apps/api/src/admin-content-studio/admin-runtime-index.service.ts
+index 6c3e34b3ea003d86e7138b213a41c24ee1e1507b..65df0aa2f3ca62efea4c356b1bd0f744ac1c7c9a 100644
+--- a/apps/api/src/admin-content-studio/admin-runtime-index.service.ts
++++ b/apps/api/src/admin-content-studio/admin-runtime-index.service.ts
+@@ -1,3 +1,4 @@
++import { publishedIndexSchema } from '../index-runtime/index-runtime.service';
+ import { HttpStatus, Injectable } from '@nestjs/common';
+ import { DatabaseService } from '../common/database/database.service';
+ import { DomainException } from '../common/http/domain.exception';
+@@ -7,12 +8,6 @@ import type { CreateRuntimeTermDTO, ReorderRuntimeFieldsDTO, UpdateRuntimePostTy
+ const runtimeTypes=['mold','full_sermon','supporting'] as const;
+ const runtimeTypeSet=new Set<string>(runtimeTypes);
+ const fixedFieldTypes:Record<string,string>={'IDX-001':'taxonomy','IDX-002':'taxonomy','IDX-003':'taxonomy','IDX-004':'textarea'};
+-const parentMap:Record<string,string>={
+-  'IDX-002':'IDX-001',
+-  'IDX-006':'IDX-005',
+-  'IDX-008':'IDX-007',
+-  'IDX-010':'IDX-009',
+-};
+ const normalize=(v:string)=>v.normalize('NFKC').replace(/[يى]/g,'ی').replace(/ك/g,'ک').replace(/[\u064b-\u065f\u0670]/g,'').replace(/\u200c/g,' ').replace(/\s+/g,' ').trim().toLocaleLowerCase('fa-IR');
+ 
+ interface RuntimeTaxonomyRow {
+@@ -40,6 +35,18 @@ export class AdminRuntimeIndexService {
+     if(!r.rows[0])throw new DomainException('Index.Taxonomy.NotFound',HttpStatus.NOT_FOUND);
+   }
+ 
++  private async parentCode(code:string,contentType=''):Promise<string|null>{
++    const parent=(await this.db.query<{code:string}>(`SELECT parent.config->'runtime'->>'taxonomyCode' AS code FROM zoha.index_form_fields child JOIN zoha.index_form_versions v ON v.id=child.version_id JOIN zoha.index_forms f ON f.id=v.index_form_id AND f.draft_version=v.version LEFT JOIN zoha.index_form_fields parent ON parent.version_id=child.version_id AND parent.field_key=child.config->'hierarchy'->>'parentKey' AND parent.active AND NOT parent.deleted WHERE child.config->'runtime'->>'taxonomyCode'=$1 AND ($2='' OR f.id IN(SELECT m.index_form_id FROM zoha.content_type_index_forms m JOIN zoha.content_types ct ON ct.id=m.content_type_id WHERE ct.code=$2 AND m.is_primary AND m.active AND NOT m.deleted)) AND child.active AND NOT child.deleted AND f.active AND NOT f.deleted ORDER BY child.updated_at DESC LIMIT 1`,[code,contentType])).rows[0];
++    return parent?.code??null;
++  }
++  private async termParent(code:string,id?:string,hint?:string):Promise<{id:string|null;hint:string|null}>{
++    const parentCode=await this.parentCode(code);
++    if(!parentCode){if(id)throw new DomainException('این نمایه والد ندارد.',HttpStatus.BAD_REQUEST);return {id:null,hint:null}}
++    if(!id||!/^[0-9]+$/.test(id))throw new DomainException('آیتم والد را از فهرست انتخاب کنید.',HttpStatus.BAD_REQUEST);
++    const parent=(await this.db.query<{id:string;normalized_title:string}>(`SELECT id::text,normalized_title FROM zoha.index_runtime_terms WHERE id=$1 AND taxonomy_code=$2 AND is_active`,[id,parentCode])).rows[0];
++    if(!parent)throw new DomainException('آیتم والد معتبر نیست.',HttpStatus.BAD_REQUEST);
++    return {id:parent.id,hint:parent.normalized_title};
++  }
+   async overview(principalInput:Principal|null,contentTypeInput?:string):Promise<Record<string,unknown>>{
+     this.admin(principalInput);
+     const contentType=this.contentType(contentTypeInput&&runtimeTypeSet.has(contentTypeInput)?contentTypeInput:'mold');
+@@ -66,7 +73,7 @@ export class AdminRuntimeIndexService {
+     const Taxonomies=taxonomies.rows.map(row=>({
+       Code:row.code,Title:row.title,LegacyTitle:row.legacy_title,FieldType:row.field_type,IsMulti:row.is_multi,AllowsPersonal:row.allows_personal,
+       Metadata:row.metadata,IsActive:row.is_active,ActiveTermCount:Number(row.active_term_count),TotalTermCount:Number(row.total_term_count),
+-      Assigned:row.sort_order!==null,SortOrder:row.sort_order,IsRequired:Boolean(row.is_required),Settings:row.settings??{},ParentTaxonomyCode:parentMap[row.code]??null,
++      Assigned:row.sort_order!==null,SortOrder:row.sort_order,IsRequired:Boolean(row.is_required),Settings:row.settings??{},ParentTaxonomyCode:String(row.metadata?.parentTaxonomyCode??'')||null,
+     }));
+     const ContentTypes=types.rows.map(row=>({Code:row.code,Title:row.title,Description:row.description,Settings:row.settings,FieldCount:Number(row.field_count),RuntimeEnabled:true}));
+     return {SelectedContentType:contentType,ContentTypes,Taxonomies,Fields:Taxonomies.filter(v=>v.Assigned),Relations:relations.rows};
+@@ -75,71 +82,45 @@ export class AdminRuntimeIndexService {
+   async previewSchema(principalInput:Principal|null,contentTypeInput:string):Promise<Record<string,unknown>>{
+     this.admin(principalInput);
+     const contentType=this.contentType(contentTypeInput);
+-    const [fields,relations]=await Promise.all([
+-      this.db.query(`SELECT t.code,t.title,t.legacy_title AS "legacyTitle",t.field_type AS type,t.is_multi AS multi,t.allows_personal AS "allowsPersonal",p.sort_order AS "sortOrder",p.settings
+-        FROM zoha.index_runtime_post_type_fields p
+-        JOIN zoha.index_runtime_taxonomies t ON t.code=p.taxonomy_code
+-        WHERE p.post_type_code=$1 AND t.is_active
+-        ORDER BY p.sort_order`,[contentType]),
+-      this.db.query(`SELECT code,source_title AS source,target_title AS target,cardinality,rule_text AS rule,note FROM zoha.index_runtime_relations ORDER BY code`),
+-    ]);
+-    return {contentType,version:3,fields:fields.rows,relations:relations.rows,topicAnalysis:{fields:['IDX-001','IDX-003','IDX-002','IDX-004'],label:'موضوع ← کلید پردازش ← زیرموضوع ← برداشت'}};
++    return publishedIndexSchema(this.db,contentType);
+   }
+ 
+-  async previewOptions(principalInput:Principal|null,code:string,q='',parent=''):Promise<Record<string,unknown>>{
++  async previewOptions(principalInput:Principal|null,code:string,q='',parent='',parentId='',parentScope='',contentType=''):Promise<Record<string,unknown>>{
+     this.admin(principalInput);
+     const tx=(await this.db.query<{code:string;title:string;allows_personal:boolean}>(`SELECT code,title,allows_personal FROM zoha.index_runtime_taxonomies WHERE code=$1 AND is_active`,[code])).rows[0];
+     if(!tx)throw new DomainException('Index.Taxonomy.NotFound',HttpStatus.NOT_FOUND);
+     const n=normalize(q),p=normalize(parent);
++    if(await this.parentCode(code,contentType)&&!parent)return {taxonomy:tx,items:[]};
++    if(parentId&&!/^[0-9]+$/.test(parentId))throw new DomainException('Index.Parent.Invalid',HttpStatus.BAD_REQUEST);
+     const items=await this.db.query(`SELECT id,title,'system'::text AS scope,parent_hint AS parent FROM zoha.index_runtime_terms
+-      WHERE taxonomy_code=$1 AND is_active AND ($2='' OR normalized_title LIKE '%'||$2||'%') AND ($3='' OR parent_hint=$3)
+-      ORDER BY sort_order,title LIMIT 80`,[code,n,p]);
++      WHERE taxonomy_code=$1 AND is_active AND ($2='' OR normalized_title LIKE '%'||$2||'%') AND ($3='' OR parent_hint=$3 OR (parent_id IS NULL AND parent_hint IS NULL)) AND ($4='' OR ($5='system' AND (parent_id::text=$4 OR (parent_id IS NULL AND (parent_hint=$3 OR parent_hint IS NULL)))))
++      ORDER BY sort_order,title LIMIT 80`,[code,n,p,parentId,parentScope]);
+     return {taxonomy:tx,items:items.rows};
+   }
+ 
+   async assignField(principalInput:Principal|null,contentTypeInput:string,taxonomyCode:string):Promise<Record<string,unknown>>{
+-    this.admin(principalInput);const contentType=this.contentType(contentTypeInput);await this.taxonomy(taxonomyCode);
+-    await this.db.query(`INSERT INTO zoha.index_runtime_post_type_fields(post_type_code,taxonomy_code,sort_order,is_required,settings)
+-      VALUES($1,$2,(SELECT COALESCE(max(sort_order),0)+10 FROM zoha.index_runtime_post_type_fields WHERE post_type_code=$1),false,'{}'::jsonb)
+-      ON CONFLICT(post_type_code,taxonomy_code) DO NOTHING`,[contentType,taxonomyCode]);
+-    return this.overview(principalInput,contentType);
++    this.admin(principalInput);
++    throw new DomainException('تعریف نمایه فقط از نمایه‌ساز و با انتشار نسخه انجام می‌شود.',HttpStatus.CONFLICT);
+   }
+ 
+   async updateField(principalInput:Principal|null,contentTypeInput:string,taxonomyCode:string,body:UpdateRuntimePostTypeFieldDTO):Promise<Record<string,unknown>>{
+-    this.admin(principalInput);const contentType=this.contentType(contentTypeInput);await this.taxonomy(taxonomyCode);
+-    const current=await this.db.query<{settings:Record<string,unknown>;is_required:boolean}>(`SELECT settings,is_required FROM zoha.index_runtime_post_type_fields WHERE post_type_code=$1 AND taxonomy_code=$2`,[contentType,taxonomyCode]);
+-    const row=current.rows[0];if(!row)throw new DomainException('Index.Runtime.Field.NotFound',HttpStatus.NOT_FOUND);
+-    const settings=body.Settings===undefined?row.settings:body.Settings;
+-    await this.db.query(`UPDATE zoha.index_runtime_post_type_fields SET is_required=$3,settings=$4::jsonb WHERE post_type_code=$1 AND taxonomy_code=$2`,[contentType,taxonomyCode,body.IsRequired??row.is_required,JSON.stringify(settings)]);
+-    return this.overview(principalInput,contentType);
++    this.admin(principalInput);
++    throw new DomainException('تعریف نمایه فقط از نمایه‌ساز و با انتشار نسخه انجام می‌شود.',HttpStatus.CONFLICT);
+   }
+ 
+   async removeField(principalInput:Principal|null,contentTypeInput:string,taxonomyCode:string):Promise<Record<string,unknown>>{
+-    this.admin(principalInput);const contentType=this.contentType(contentTypeInput);
+-    await this.db.query(`DELETE FROM zoha.index_runtime_post_type_fields WHERE post_type_code=$1 AND taxonomy_code=$2`,[contentType,taxonomyCode]);
+-    return this.overview(principalInput,contentType);
++    this.admin(principalInput);
++    throw new DomainException('تعریف نمایه فقط از نمایه‌ساز و با انتشار نسخه انجام می‌شود.',HttpStatus.CONFLICT);
+   }
+ 
+   async reorder(principalInput:Principal|null,contentTypeInput:string,body:ReorderRuntimeFieldsDTO):Promise<Record<string,unknown>>{
+-    this.admin(principalInput);const contentType=this.contentType(contentTypeInput);
+-    const unique=[...new Set(body.TaxonomyCodes)];
+-    const assigned=await this.db.query<{taxonomy_code:string}>(`SELECT taxonomy_code FROM zoha.index_runtime_post_type_fields WHERE post_type_code=$1`,[contentType]);
+-    const assignedSet=new Set(assigned.rows.map(v=>v.taxonomy_code));
+-    if(unique.length!==assignedSet.size||unique.some(code=>!assignedSet.has(code)))throw new DomainException('Index.Runtime.Reorder.Invalid',HttpStatus.BAD_REQUEST);
+-    await this.db.transaction(async client=>{for(let i=0;i<unique.length;i+=1)await client.query(`UPDATE zoha.index_runtime_post_type_fields SET sort_order=$3 WHERE post_type_code=$1 AND taxonomy_code=$2`,[contentType,unique[i],(i+1)*10]);});
+-    return this.overview(principalInput,contentType);
++    this.admin(principalInput);
++    throw new DomainException('تعریف نمایه فقط از نمایه‌ساز و با انتشار نسخه انجام می‌شود.',HttpStatus.CONFLICT);
+   }
+ 
+   async updateTaxonomy(principalInput:Principal|null,code:string,body:UpdateRuntimeTaxonomyDTO):Promise<Record<string,unknown>>{
+-    this.admin(principalInput);await this.taxonomy(code);
+-    const current=await this.db.query<{title:string;field_type:string;is_multi:boolean;allows_personal:boolean;is_active:boolean;metadata:Record<string,unknown>}>(`SELECT title,field_type,is_multi,allows_personal,is_active,metadata FROM zoha.index_runtime_taxonomies WHERE code=$1`,[code]);
+-    const row=current.rows[0]!;
+-    const fixed=fixedFieldTypes[code];
+-    if(fixed&&body.FieldType!==undefined&&body.FieldType!==fixed)throw new DomainException('Index.Taxonomy.CoreType.Fixed',HttpStatus.CONFLICT);
+-    await this.db.query(`UPDATE zoha.index_runtime_taxonomies SET title=$2,field_type=$3,is_multi=$4,allows_personal=$5,is_active=$6,metadata=$7::jsonb,updated_at=now() WHERE code=$1`,[
+-      code,body.Title?.trim()||row.title,body.FieldType??row.field_type,body.IsMulti??row.is_multi,body.AllowsPersonal??row.allows_personal,body.IsActive??row.is_active,JSON.stringify(body.Metadata??row.metadata),
+-    ]);
+-    return {ok:true};
++    this.admin(principalInput);
++    throw new DomainException('تعریف نمایه فقط از نمایه‌ساز و با انتشار نسخه انجام می‌شود.',HttpStatus.CONFLICT);
+   }
+ 
+   async terms(principalInput:Principal|null,code:string,query='',pageInput='1',pageSizeInput='50',includeInactiveInput='false'):Promise<Record<string,unknown>>{
+@@ -152,20 +133,20 @@ export class AdminRuntimeIndexService {
+         ORDER BY is_active DESC,sort_order,title LIMIT $4 OFFSET $5`,[code,q,includeInactive,pageSize,offset]),
+       this.db.query<{value:string}>(`SELECT count(*)::text AS value FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND ($2='' OR normalized_title LIKE '%'||$2||'%') AND ($3::boolean OR is_active)`,[code,q,includeInactive]),
+     ]);
+-    return {TaxonomyCode:code,ParentTaxonomyCode:parentMap[code]??null,Items:items.rows.map(row=>({Id:row.id,Title:row.title,ParentId:row.parent_id,ParentHint:row.parent_hint,Metadata:row.metadata,SortOrder:row.sort_order,IsActive:row.is_active,CreatedAt:row.created_at})),Total:Number(total.rows[0]?.value??0),Page:page,PageSize:pageSize};
++    return {TaxonomyCode:code,ParentTaxonomyCode:await this.parentCode(code),Items:items.rows.map(row=>({Id:row.id,Title:row.title,ParentId:row.parent_id,ParentHint:row.parent_hint,Metadata:row.metadata,SortOrder:row.sort_order,IsActive:row.is_active,CreatedAt:row.created_at})),Total:Number(total.rows[0]?.value??0),Page:page,PageSize:pageSize};
+   }
+ 
+   async createTerm(principalInput:Principal|null,code:string,body:CreateRuntimeTermDTO):Promise<Record<string,unknown>>{
+     this.admin(principalInput);await this.taxonomy(code);
+     const title=body.Title.trim();if(title.length<1)throw new DomainException('Index.Term.Title.Invalid',HttpStatus.BAD_REQUEST);
+-    const normalized=normalize(title),parentHint=body.ParentHint?.trim()?normalize(body.ParentHint):null;
+-    const existing=await this.db.query<{id:string;is_active:boolean}>(`SELECT id::text,is_active FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND normalized_title=$2 AND COALESCE(parent_hint,'')=COALESCE($3,'') ORDER BY is_active DESC LIMIT 1`,[code,normalized,parentHint]);
++    const normalized=normalize(title),parent=await this.termParent(code,body.ParentId,body.ParentHint),parentHint=parent.hint;
++    const existing=await this.db.query<{id:string;is_active:boolean}>(`SELECT id::text,is_active FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND normalized_title=$2 AND parent_id IS NOT DISTINCT FROM $3::bigint ORDER BY is_active DESC LIMIT 1`,[code,normalized,parent.id]);
+     if(existing.rows[0]){
+       if(existing.rows[0].is_active)throw new DomainException('Index.Term.Exists',HttpStatus.CONFLICT);
+-      const revived=await this.db.query(`UPDATE zoha.index_runtime_terms SET title=$2,normalized_title=$3,parent_hint=$4,sort_order=$5,metadata=$6::jsonb,is_active=true WHERE id=$1 RETURNING id::text AS "Id",title AS "Title",parent_hint AS "ParentHint",sort_order AS "SortOrder",is_active AS "IsActive"`,[existing.rows[0].id,title,normalized,parentHint,body.SortOrder??0,JSON.stringify(body.Metadata??{})]);
++      const revived=await this.db.query(`UPDATE zoha.index_runtime_terms SET title=$2,normalized_title=$3,parent_hint=$4,sort_order=$5,metadata=$6::jsonb,parent_id=$7,is_active=true WHERE id=$1 RETURNING id::text AS "Id",title AS "Title",parent_hint AS "ParentHint",parent_id::text AS "ParentId",sort_order AS "SortOrder",is_active AS "IsActive"`,[existing.rows[0].id,title,normalized,parentHint,body.SortOrder??0,JSON.stringify(body.Metadata??{}),parent.id]);
+       return revived.rows[0]??{ok:true};
+     }
+-    const r=await this.db.query(`INSERT INTO zoha.index_runtime_terms(taxonomy_code,title,normalized_title,parent_hint,metadata,sort_order,is_active) VALUES($1,$2,$3,$4,$5::jsonb,$6,true) RETURNING id::text AS "Id",title AS "Title",parent_hint AS "ParentHint",sort_order AS "SortOrder",is_active AS "IsActive"`,[code,title,normalized,parentHint,JSON.stringify(body.Metadata??{}),body.SortOrder??0]);
++    const r=await this.db.query(`INSERT INTO zoha.index_runtime_terms(taxonomy_code,title,normalized_title,parent_hint,metadata,sort_order,parent_id,is_active) VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,true) RETURNING id::text AS "Id",title AS "Title",parent_hint AS "ParentHint",parent_id::text AS "ParentId",sort_order AS "SortOrder",is_active AS "IsActive"`,[code,title,normalized,parentHint,JSON.stringify(body.Metadata??{}),body.SortOrder??0,parent.id]);
+     return r.rows[0]??{ok:true};
+   }
+ 
+@@ -174,10 +155,10 @@ export class AdminRuntimeIndexService {
+     const current=await this.db.query<RuntimeTermRow>(`SELECT id::text,title,normalized_title,parent_id::text,parent_hint,metadata,sort_order,is_active,created_at FROM zoha.index_runtime_terms WHERE id=$1 AND taxonomy_code=$2`,[id,code]);
+     const row=current.rows[0];if(!row)throw new DomainException('Index.Term.NotFound',HttpStatus.NOT_FOUND);
+     const title=body.Title===undefined?row.title:body.Title.trim();if(!title)throw new DomainException('Index.Term.Title.Invalid',HttpStatus.BAD_REQUEST);
+-    const normalized=normalize(title);const parentHint=body.ParentHint===undefined?row.parent_hint:(body.ParentHint.trim()?normalize(body.ParentHint):null);
+-    const duplicate=await this.db.query<{id:string}>(`SELECT id::text FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND normalized_title=$2 AND COALESCE(parent_hint,'')=COALESCE($3,'') AND id<>$4 AND is_active LIMIT 1`,[code,normalized,parentHint,id]);
++    const normalized=normalize(title);const parent=await this.termParent(code,body.ParentId??row.parent_id??undefined,body.ParentHint??row.parent_hint??undefined),parentHint=parent.hint;
++    const duplicate=await this.db.query<{id:string}>(`SELECT id::text FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND normalized_title=$2 AND parent_id IS NOT DISTINCT FROM $3::bigint AND id<>$4 AND is_active LIMIT 1`,[code,normalized,parent.id,id]);
+     if(duplicate.rows[0])throw new DomainException('Index.Term.Exists',HttpStatus.CONFLICT);
+-    const r=await this.db.query(`UPDATE zoha.index_runtime_terms SET title=$3,normalized_title=$4,parent_hint=$5,sort_order=$6,metadata=$7::jsonb,is_active=$8 WHERE id=$1 AND taxonomy_code=$2 RETURNING id::text AS "Id",title AS "Title",parent_hint AS "ParentHint",sort_order AS "SortOrder",is_active AS "IsActive"`,[id,code,title,normalized,parentHint,body.SortOrder??row.sort_order,JSON.stringify(body.Metadata??row.metadata),body.IsActive??row.is_active]);
++    const r=await this.db.query(`UPDATE zoha.index_runtime_terms SET title=$3,normalized_title=$4,parent_hint=$5,sort_order=$6,metadata=$7::jsonb,is_active=$8,parent_id=$9 WHERE id=$1 AND taxonomy_code=$2 RETURNING id::text AS "Id",title AS "Title",parent_hint AS "ParentHint",parent_id::text AS "ParentId",sort_order AS "SortOrder",is_active AS "IsActive"`,[id,code,title,normalized,parentHint,body.SortOrder??row.sort_order,JSON.stringify(body.Metadata??row.metadata),body.IsActive??row.is_active,parent.id]);
+     return r.rows[0]??{ok:true};
+   }
+ 
+diff --git a/apps/api/src/admin-content-studio/index-hierarchy.ts b/apps/api/src/admin-content-studio/index-hierarchy.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5eb9034b168e957ea377153129531ac2ef1cca7b
+--- /dev/null
++++ b/apps/api/src/admin-content-studio/index-hierarchy.ts
+@@ -0,0 +1,17 @@
++export interface HierarchyNode {key:string;parentKey:string|null}
++export const MAX_INDEX_DEPTH=3
++export function hierarchyDepth(nodes:HierarchyNode[],key:string):number {
++ const map=new Map(nodes.map(n=>[n.key,n]));const seen=new Set<string>();let depth=0;let node=map.get(key)
++ while(node?.parentKey){if(seen.has(node.key))throw new Error('رابطه دوری در نمایه‌ها مجاز نیست.');seen.add(node.key);node=map.get(node.parentKey);if(!node)throw new Error('نمایه والد در همین فرم وجود ندارد.');depth++;if(depth>MAX_INDEX_DEPTH)throw new Error('حداکثر سه سطح زیرشاخه زیر نمایه اصلی مجاز است.')}
++ return depth
++}
++export function validateHierarchy(nodes:HierarchyNode[]):void {
++ if(new Set(nodes.map(n=>n.key)).size!==nodes.length)throw new Error('کلید نمایه‌ها باید یکتا باشد.')
++ for(const n of nodes)hierarchyDepth(nodes,n.key)
++}
++export function hierarchyOrder<T extends HierarchyNode>(nodes:T[]):T[]{
++ validateHierarchy(nodes);const out:T[]=[];const visit=(parent:string|null)=>{for(const n of nodes)if((n.parentKey||null)===parent){out.push(n);visit(n.key)}};visit(null);return out
++}
++export function descendants(nodes:HierarchyNode[],key:string):string[]{
++ const found:string[]=[];const visit=(k:string)=>{for(const n of nodes)if(n.parentKey===k&&!found.includes(n.key)){found.push(n.key);visit(n.key)}};visit(key);return found
++}
+diff --git a/apps/api/src/index-runtime/index-runtime.controller.ts b/apps/api/src/index-runtime/index-runtime.controller.ts
+index d3358599f592f471c621107ff966ae5eedff8030..59dd271c252302d6ed40739872ed6c5fe5a74ba5 100644
+--- a/apps/api/src/index-runtime/index-runtime.controller.ts
++++ b/apps/api/src/index-runtime/index-runtime.controller.ts
+@@ -22,9 +22,9 @@ export class IndexRuntimeController{
+  upload(@Req() r:AppRequest,@Body() b:{contentType:string;fieldKey:string},@UploadedFile() file?:{originalname:string;mimetype:string;size:number;buffer:Buffer}){return this.service.uploadFieldFile(this.principal(r),b.contentType,b.fieldKey,file)}
+  @Get('files/:fileId') async download(@Req() r:AppRequest,@Param('fileId') id:string,@Res() res:Response){const f=await this.service.downloadFieldFile(this.principal(r),id);res.setHeader('Content-Type','application/octet-stream');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`);res.send(f.buffer)}
+  @Get('schema/:contentType') schema(@Param('contentType') t:string){return this.service.schema(t)}
+- @Get('taxonomies/:code/options') options(@Req() r:AppRequest,@Param('code') c:string,@Query('q') q='',@Query('parent') p=''){return this.service.options(this.principal(r),c,q,p)}
++ @Get('taxonomies/:code/options') options(@Req() r:AppRequest,@Param('code') c:string,@Query('q') q='',@Query('parent') p='',@Query('parentId') parentId='',@Query('parentScope') parentScope='',@Query('contentType') contentType=''){return this.service.options(this.principal(r),c,q,p,parentId,parentScope,contentType)}
+  @Get('personal') personal(@Req() r:AppRequest,@Query('taxonomy') c?:string){return this.service.listPersonal(this.principal(r),c)}
+- @Post('taxonomies/:code/personal') add(@Req() r:AppRequest,@Param('code') c:string,@Body() b:{title?:string,parentSystemTermId?:number|string,parentUserTermId?:number|string}){return this.service.createPersonal(this.principal(r),c,b)}
++ @Post('taxonomies/:code/personal') add(@Req() r:AppRequest,@Param('code') c:string,@Body() b:{title?:string,contentType?:string,parentSystemTermId?:number|string,parentUserTermId?:number|string}){return this.service.createPersonal(this.principal(r),c,b)}
+  @Patch('personal/:id') edit(@Req() r:AppRequest,@Param('id') id:string,@Body() b:{title:string}){return this.service.updatePersonal(this.principal(r),Number(id),b.title)}
+  @Delete('personal/:id') del(@Req() r:AppRequest,@Param('id') id:string){return this.service.deletePersonal(this.principal(r),Number(id))}
+  @Get(':contentType/:contentId') load(@Req() r:AppRequest,@Param('contentType') t:string,@Param('contentId') id:string){return this.service.loadPayload(this.principal(r),t,id)}
+diff --git a/apps/api/src/index-runtime/index-runtime.service.ts b/apps/api/src/index-runtime/index-runtime.service.ts
+index 9cdfe05a4ee348bb7e12234b3fbd668106174bf1..86636c457c1b71f7ea5c901554841bef20bc7487 100644
+--- a/apps/api/src/index-runtime/index-runtime.service.ts
++++ b/apps/api/src/index-runtime/index-runtime.service.ts
+@@ -59,78 +59,38 @@ export class IndexRuntimeService{
+   if(!found.rows[0])throw new DomainException('Content.NotFound',HttpStatus.NOT_FOUND);
+  }
+ 
+- async schema(contentType:string){
+-  this.assertContentType(contentType);
+-  const relationsPromise=this.db.query(`SELECT code,source_title AS source,target_title AS target,cardinality,rule_text AS rule,note FROM zoha.index_runtime_relations ORDER BY code`);
+-  const formFields=await this.db.query<{
+-   id:string;field_key:string;label:string;help_text:string|null;placeholder:string|null;input_kind:string;value_kind:string;
+-   required:boolean;search_enabled:boolean;index_enabled:boolean;display_order:number;width:number;config:Record<string,unknown>;validation:Record<string,unknown>;
+-   taxonomy_code:string|null;legacy_title:string|null;is_multi:boolean|null;allows_personal:boolean|null;
+-  }>(`SELECT ff.id,ff.field_key,ff.label,ff.help_text,ff.placeholder,ff.input_kind,ff.value_kind,ff.required,ff.search_enabled,ff.index_enabled,
+-      ff.display_order,ff.width,ff.config,ff.validation,t.code AS taxonomy_code,t.legacy_title,t.is_multi,t.allows_personal
+-    FROM zoha.content_types ct
+-    JOIN zoha.content_type_index_forms map ON map.content_type_id=ct.id AND map.is_primary=true AND map.active=true AND map.deleted=false
+-    JOIN zoha.index_forms f ON f.id=map.index_form_id AND f.active=true AND f.deleted=false AND f.is_active=true
+-    JOIN zoha.index_form_versions v ON v.index_form_id=f.id AND v.version=f.active_version AND v.active=true AND v.deleted=false
+-    JOIN zoha.index_form_fields ff ON ff.version_id=v.id AND ff.active=true AND ff.deleted=false
+-    LEFT JOIN zoha.index_runtime_taxonomies t ON t.code=ff.config->'runtime'->>'taxonomyCode' AND t.is_active
+-    WHERE ct.code=$1 AND ct.active=true AND ct.deleted=false
+-    ORDER BY ff.display_order,ff.id`,[contentType]);
+-  const relations=await relationsPromise;
+-  if(formFields.rows.length){
+-   const ids=formFields.rows.map(row=>row.id);
+-   const optionRows=ids.length?await this.db.query<{field_id:string;value_key:string;label:string;sort_order:number}>(
+-    `SELECT field_id,value_key,label,sort_order FROM zoha.index_form_options WHERE field_id=ANY($1::uuid[]) AND active=true AND deleted=false AND is_active=true ORDER BY field_id,sort_order,id`,[ids],
+-   ):({rows:[]} as {rows:{field_id:string;value_key:string;label:string;sort_order:number}[]});
+-   const options=new Map<string,{value:string;label:string;sortOrder:number}[]>();
+-   for(const row of optionRows.rows){const list=options.get(row.field_id)??[];list.push({value:row.value_key,label:row.label,sortOrder:row.sort_order});options.set(row.field_id,list);}
+-   const parentMap:Record<string,string>={'IDX-002':'IDX-001','IDX-006':'IDX-005','IDX-008':'IDX-007','IDX-010':'IDX-009'};
+-   const fields=formFields.rows.map(row=>{
+-    const runtime=(row.config?.runtime&&typeof row.config.runtime==='object'&&!Array.isArray(row.config.runtime)?row.config.runtime:{}) as Record<string,unknown>;
+-    const taxonomyCode=row.taxonomy_code??(typeof runtime.taxonomyCode==='string'?runtime.taxonomyCode:null);
+-    const manualOptions=options.get(row.id)??[];
+-    const sourceMode=typeof runtime.sourceMode==='string'?runtime.sourceMode:(taxonomyCode?'runtime_taxonomy':manualOptions.length?'manual':'none');
+-    return {
+-     code:taxonomyCode??row.field_key,key:row.field_key,title:row.label,legacyTitle:row.legacy_title,type:row.input_kind,valueKind:row.value_kind,
+-     multi:['multiselect','checkbox','tags'].includes(row.input_kind)||Boolean(row.is_multi),allowsPersonal:Boolean(row.allows_personal),sortOrder:row.display_order,
+-     required:row.required,searchEnabled:row.search_enabled,indexEnabled:row.index_enabled,taxonomyCode,sourceMode,
+-     parentTaxonomyCode:taxonomyCode?(typeof runtime.parentTaxonomyCode==='string'?runtime.parentTaxonomyCode:(parentMap[taxonomyCode]??null)):null,
+-     settings:{helpText:row.help_text??'',placeholder:row.placeholder??'',width:row.width},config:row.config??{},validation:row.validation??{},options:manualOptions,
+-    };
+-   });
+-   return {contentType,version:4,builder:'runtime-hybrid-v4',fields,relations:relations.rows,topicAnalysis:{fields:['IDX-001','IDX-003','IDX-002','IDX-004'],label:'موضوع ← کلید پردازش ← زیرموضوع ← برداشت'}};
+-  }
+-  const fields=await this.db.query(`SELECT t.code,t.title,t.legacy_title AS "legacyTitle",t.field_type AS type,t.is_multi AS multi,t.allows_personal AS "allowsPersonal",p.sort_order AS "sortOrder",p.is_required AS required,p.settings
+-    FROM zoha.index_runtime_post_type_fields p JOIN zoha.index_runtime_taxonomies t ON t.code=p.taxonomy_code
+-    WHERE p.post_type_code=$1 AND t.is_active ORDER BY p.sort_order`,[contentType]);
+-  return {contentType,version:3,builder:'runtime-fallback',fields:fields.rows,relations:relations.rows,topicAnalysis:{fields:['IDX-001','IDX-003','IDX-002','IDX-004'],label:'موضوع ← کلید پردازش ← زیرموضوع ← برداشت'}};
+- }
+- async options(principal:Principal,code:string,q='',parent=''){
+-  const tx=(await this.db.query<{code:string;title:string;allows_personal:boolean}>(`SELECT code,title,allows_personal FROM zoha.index_runtime_taxonomies WHERE code=$1 AND is_active`,[code])).rows[0];
++ async schema(contentType:string){return publishedIndexSchema(this.db,contentType)}
++
++ async options(principal:Principal,code:string,q='',parent='',parentId='',parentScope='',contentType=''){
++  const tx=(await this.db.query<{code:string;title:string;allows_personal:boolean;parent_taxonomy_code:string|null}>(`SELECT DISTINCT taxonomy_code AS code,label AS title,COALESCE((config->'runtime'->>'allowsPersonal')::boolean,false) AS allows_personal,parent_taxonomy_code FROM zoha.index_builder_published_fields WHERE taxonomy_code=$1 AND ($2='' OR content_type=$2) LIMIT 1`,[code,contentType])).rows[0];
+   if(!tx)throw new DomainException('Index.Taxonomy.NotFound',HttpStatus.NOT_FOUND);
+   const n=normalize(q),p=normalize(parent);
+-  const sys=await this.db.query(`SELECT id,title,'system'::text AS scope,parent_hint AS parent FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND is_active AND ($2='' OR normalized_title LIKE '%'||$2||'%') AND ($3='' OR parent_hint=$3) ORDER BY sort_order,title LIMIT 80`,[code,n,p]);
+-  const own=await this.db.query(`SELECT id,title,'personal'::text AS scope,NULL::text AS parent FROM zoha.user_index_terms WHERE user_id=$1 AND taxonomy_code=$2 AND is_active AND ($3='' OR normalized_title LIKE '%'||$3||'%') ORDER BY updated_at DESC LIMIT 40`,[principal.apiUserId,code,n]);
++  if(tx.parent_taxonomy_code&&!parent)return {taxonomy:tx,items:[]};
++  if(parentId&&!/^[0-9]+$/.test(parentId))throw new DomainException('Index.Parent.Invalid',HttpStatus.BAD_REQUEST);
++  const sys=await this.db.query(`SELECT id,title,'system'::text AS scope,parent_hint AS parent FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND is_active AND ($2='' OR normalized_title LIKE '%'||$2||'%') AND ($3='' OR parent_hint=$3 OR (parent_id IS NULL AND parent_hint IS NULL)) AND ($4='' OR ($5='system' AND (parent_id::text=$4 OR (parent_id IS NULL AND (parent_hint=$3 OR parent_hint IS NULL))))) ORDER BY sort_order,title LIMIT 80`,[code,n,p,parentId,parentScope]);
++  const own=await this.db.query(`SELECT id,title,'personal'::text AS scope,NULL::text AS parent FROM zoha.user_index_terms WHERE user_id=$1 AND taxonomy_code=$2 AND is_active AND ($3='' OR normalized_title LIKE '%'||$3||'%') AND ($4='' OR ($5='system' AND parent_system_term_id::text=$4) OR ($5='personal' AND parent_user_term_id::text=$4)) ORDER BY updated_at DESC LIMIT 40`,[principal.apiUserId,code,n,parentId,parentScope]);
+   return {taxonomy:tx,items:[...sys.rows,...own.rows]};
+  }
+- async createPersonal(principal:Principal,code:string,body:{title?:string,parentSystemTermId?:number|string,parentUserTermId?:number|string}){
++ async createPersonal(principal:Principal,code:string,body:{title?:string,contentType?:string,parentSystemTermId?:number|string,parentUserTermId?:number|string}){
+   const title=(body.title??'').trim();
+   if(title.length<2||title.length>180)throw new DomainException('Index.Personal.Title.Invalid',HttpStatus.BAD_REQUEST);
+-  const tx=(await this.db.query<{allows_personal:boolean}>(`SELECT allows_personal FROM zoha.index_runtime_taxonomies WHERE code=$1 AND is_active`,[code])).rows[0];
++  const tx=(await this.db.query<{allows_personal:boolean;parent_taxonomy_code:string|null}>(`SELECT COALESCE((config->'runtime'->>'allowsPersonal')::boolean,false) AS allows_personal,parent_taxonomy_code FROM zoha.index_builder_published_fields WHERE taxonomy_code=$1 AND ($2='' OR content_type=$2) LIMIT 1`,[code,body.contentType??''])).rows[0];
+   if(!tx)throw new DomainException('Index.Taxonomy.NotFound',HttpStatus.NOT_FOUND);
+   if(!tx.allows_personal)throw new DomainException('Index.Personal.Disabled',HttpStatus.BAD_REQUEST);
+-  if(body.parentUserTermId){
+-   const parent=await this.db.query(`SELECT id FROM zoha.user_index_terms WHERE id=$1 AND user_id=$2 AND is_active`,[body.parentUserTermId,principal.apiUserId]);
++  if(body.parentUserTermId&&body.parentSystemTermId)throw new DomainException('Index.Parent.Invalid',HttpStatus.BAD_REQUEST);
++  if(tx.parent_taxonomy_code){
++   if(!body.parentUserTermId&&!body.parentSystemTermId)throw new DomainException('ابتدا آیتم والد را انتخاب کنید.',HttpStatus.BAD_REQUEST);
++   const parent=body.parentUserTermId?await this.db.query(`SELECT id FROM zoha.user_index_terms WHERE id=$1 AND user_id=$2 AND taxonomy_code=$3 AND is_active`,[body.parentUserTermId,principal.apiUserId,tx.parent_taxonomy_code]):await this.db.query(`SELECT id FROM zoha.index_runtime_terms WHERE id=$1 AND taxonomy_code=$2 AND is_active`,[body.parentSystemTermId,tx.parent_taxonomy_code]);
+    if(!parent.rows[0])throw new DomainException('Index.Personal.Parent.Forbidden',HttpStatus.FORBIDDEN);
+-  }
++  }else if(body.parentUserTermId||body.parentSystemTermId)throw new DomainException('Index.Parent.Invalid',HttpStatus.BAD_REQUEST);
+   const n=normalize(title);
+-  const global=await this.db.query(`SELECT id,title FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND normalized_title=$2 AND is_active LIMIT 1`,[code,n]);
++  const global=await this.db.query(`SELECT id,title FROM zoha.index_runtime_terms WHERE taxonomy_code=$1 AND normalized_title=$2 AND is_active AND ($3::bigint IS NULL OR parent_id=$3) AND $4::bigint IS NULL LIMIT 1`,[code,n,body.parentSystemTermId??null,body.parentUserTermId??null]);
+   if(global.rows[0])return {created:false,useExisting:true,item:{...global.rows[0],scope:'system'}};
+   try{
+    const r=await this.db.query(`INSERT INTO zoha.user_index_terms(user_id,taxonomy_code,title,normalized_title,parent_system_term_id,parent_user_term_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,title`,[principal.apiUserId,code,title,n,body.parentSystemTermId??null,body.parentUserTermId??null]);
+    return {created:true,item:{...r.rows[0],scope:'personal'}};
+   }catch(error:unknown){
+-   const r=await this.db.query(`SELECT id,title FROM zoha.user_index_terms WHERE user_id=$1 AND taxonomy_code=$2 AND normalized_title=$3 AND is_active LIMIT 1`,[principal.apiUserId,code,n]);
++   const r=await this.db.query(`SELECT id,title FROM zoha.user_index_terms WHERE user_id=$1 AND taxonomy_code=$2 AND normalized_title=$3 AND is_active AND parent_system_term_id IS NOT DISTINCT FROM $4::bigint AND parent_user_term_id IS NOT DISTINCT FROM $5::bigint LIMIT 1`,[principal.apiUserId,code,n,body.parentSystemTermId??null,body.parentUserTermId??null]);
+    if(r.rows[0])return {created:false,useExisting:true,item:{...r.rows[0],scope:'personal'}};
+    throw error;
+   }
+@@ -154,3 +114,46 @@ export class IndexRuntimeService{
+   return {ok:true,...r.rows[0]};
+  }
+ }
++
++export async function publishedIndexSchema(db:DatabaseService,contentType:string){
++  if(!validTypes.has(contentType))throw new DomainException('Index.ContentType.Invalid',HttpStatus.BAD_REQUEST);
++  const relationsPromise=db.query(`SELECT code,source_title AS source,target_title AS target,cardinality,rule_text AS rule,note FROM zoha.index_runtime_relations ORDER BY code`);
++  const formFields=await db.query<{
++   id:string;field_key:string;label:string;help_text:string|null;placeholder:string|null;input_kind:string;value_kind:string;
++   required:boolean;search_enabled:boolean;index_enabled:boolean;display_order:number;width:number;config:Record<string,unknown>;validation:Record<string,unknown>;
++   parent_key:string|null;parent_taxonomy_code:string|null;taxonomy_code:string|null;legacy_title:string|null;is_multi:boolean|null;allows_personal:boolean|null;
++  }>(`SELECT ff.id,ff.field_key,ff.label,ff.help_text,ff.placeholder,ff.input_kind,ff.value_kind,ff.required,ff.search_enabled,ff.index_enabled,
++      ff.display_order,ff.width,ff.config,ff.validation,ff.config->'runtime'->>'taxonomyCode' AS taxonomy_code,NULL::text AS legacy_title,false AS is_multi,COALESCE((ff.config->'runtime'->>'allowsPersonal')::boolean,false) AS allows_personal,parent.field_key AS parent_key,parent.config->'runtime'->>'taxonomyCode' AS parent_taxonomy_code
++    FROM zoha.content_types ct
++    JOIN zoha.content_type_index_forms map ON map.content_type_id=ct.id AND map.is_primary=true AND map.active=true AND map.deleted=false
++    JOIN zoha.index_forms f ON f.id=map.index_form_id AND f.active=true AND f.deleted=false AND f.is_active=true
++    JOIN zoha.index_form_versions v ON v.index_form_id=f.id AND v.version=f.active_version AND v.active=true AND v.deleted=false
++    JOIN zoha.index_form_fields ff ON ff.version_id=v.id AND ff.active=true AND ff.deleted=false
++    LEFT JOIN zoha.index_form_fields parent ON parent.version_id=v.id AND parent.field_key=ff.config->'hierarchy'->>'parentKey' AND parent.active AND NOT parent.deleted
++    WHERE ct.code=$1 AND ct.active=true AND ct.deleted=false
++    ORDER BY ff.display_order,ff.id`,[contentType]);
++  const relations=await relationsPromise;
++  if(formFields.rows.length){
++   const ids=formFields.rows.map(row=>row.id);
++   const optionRows=ids.length?await db.query<{field_id:string;value_key:string;label:string;sort_order:number}>(
++    `SELECT field_id,value_key,label,sort_order FROM zoha.index_form_options WHERE field_id=ANY($1::uuid[]) AND active=true AND deleted=false AND is_active=true ORDER BY field_id,sort_order,id`,[ids],
++   ):({rows:[]} as {rows:{field_id:string;value_key:string;label:string;sort_order:number}[]});
++   const options=new Map<string,{value:string;label:string;sortOrder:number}[]>();
++   for(const row of optionRows.rows){const list=options.get(row.field_id)??[];list.push({value:row.value_key,label:row.label,sortOrder:row.sort_order});options.set(row.field_id,list);}
++    const fields=formFields.rows.map(row=>{
++    const runtime=(row.config?.runtime&&typeof row.config.runtime==='object'&&!Array.isArray(row.config.runtime)?row.config.runtime:{}) as Record<string,unknown>;
++    const taxonomyCode=row.taxonomy_code??(typeof runtime.taxonomyCode==='string'?runtime.taxonomyCode:null);
++    const manualOptions=options.get(row.id)??[];
++    const sourceMode=typeof runtime.sourceMode==='string'?runtime.sourceMode:(taxonomyCode?'runtime_taxonomy':manualOptions.length?'manual':'none');
++    return {
++     code:taxonomyCode??row.field_key,key:row.field_key,title:row.label,legacyTitle:row.legacy_title,type:row.input_kind,valueKind:row.value_kind,
++     multi:['multiselect','checkbox','tags'].includes(row.input_kind)||Boolean(row.is_multi),allowsPersonal:Boolean(row.allows_personal),sortOrder:row.display_order,
++     required:row.required,searchEnabled:row.search_enabled,indexEnabled:row.index_enabled,taxonomyCode,sourceMode,
++     parentKey:row.parent_key,parentTaxonomyCode:row.parent_taxonomy_code,
++     settings:{helpText:row.help_text??'',placeholder:row.placeholder??'',width:row.width},config:row.config??{},validation:row.validation??{},options:manualOptions,
++    };
++   });
++   return {contentType,version:6,builder:'index-builder-v6',fields,relations:relations.rows,topicAnalysis:{fields:['IDX-001','IDX-003','IDX-002','IDX-004'],label:'نمایه‌ها و زیرشاخه‌های تعریف‌شده در نمایه‌ساز'}};
++  }
++  return {contentType,version:6,builder:'index-builder-v6',fields:[],relations:relations.rows,topicAnalysis:{fields:[],label:''}};
++ }
+diff --git a/apps/web/components/indexing/IndexDynamicField.vue b/apps/web/components/indexing/IndexDynamicField.vue
+index 0ca6e61009931bb8ee43e4071e1703981adbce31..90b83560dbaad3ed72d80d6e94b11e975376a1bb 100644
+--- a/apps/web/components/indexing/IndexDynamicField.vue
++++ b/apps/web/components/indexing/IndexDynamicField.vue
+@@ -35,14 +35,15 @@ const multiFile=computed(()=>Boolean(config.value.multiple??f.value.multi))
+ const fileItems=computed(()=>(Array.isArray(props.modelValue)?props.modelValue:props.modelValue?[props.modelValue]:[]) as {id?:string;name:string;size:number;preview?:boolean}[])
+ watch(amount,v=>{if(v!==null&&!Object.is(v,props.modelValue))emit('update:modelValue',v)},{immediate:true})
+ 
+-const loadRuntime=async()=>{
++let runtimeRequest=0
++const loadRuntime=async()=>{const request=++runtimeRequest;runtimeItems.value=[];
+  if(sourceMode.value!=='runtime_taxonomy'||!taxonomyCode.value||['searchable_select','multiselect','tags'].includes(f.value.type))return
+  runtimeBusy.value=true
+- try{const r=await api.options(taxonomyCode.value,'',props.parent||'');runtimeItems.value=r.items??[]}
++ try{const r=await api.options(taxonomyCode.value,'',props.parent||'',props.personalParentOption,props.contentType);if(request===runtimeRequest)runtimeItems.value=r.items??[]}
+  catch(e:unknown){localError.value=e instanceof Error?e.message:'دریافت گزینه‌ها انجام نشد.'}
+- finally{runtimeBusy.value=false}
++ finally{if(request===runtimeRequest)runtimeBusy.value=false}
+ }
+-watch([taxonomyCode,sourceMode,()=>props.parent],()=>void loadRuntime())
++watch([taxonomyCode,sourceMode,()=>props.parent,()=>props.personalParentOption?.id,()=>props.personalParentOption?.scope],()=>void loadRuntime())
+ onMounted(()=>void loadRuntime())
+ 
+ const runtimeSingle=(key:string)=>emit('update:modelValue',runtimeItems.value.find(x=>`${x.scope}:${x.id}`===key)??null)
+@@ -94,7 +95,7 @@ const numberInput=(event:Event)=>{const s=textValue(event);emit('update:modelVal
+    v-if="sourceMode==='runtime_taxonomy'&&taxonomyCode&&['searchable_select','multiselect','tags'].includes(f.type)"
+    :admin-preview="adminPreview" :code="taxonomyCode" :label="f.title" :required="f.required" :placeholder="placeholder"
+    :help-text="helpText" :multi="f.type!=='searchable_select'||f.multi" :allows-personal="f.allowsPersonal"
+-   :parent="parent" :personal-parent-option="personalParentOption" :model-value="modelValue"
++   :content-type="contentType" :parent="parent" :personal-parent-option="personalParentOption" :model-value="modelValue"
+    @update:model-value="emit('update:modelValue',$event)"
+   />
+ 
+diff --git a/apps/web/components/indexing/IndexPersonalSelect.vue b/apps/web/components/indexing/IndexPersonalSelect.vue
+index 610b413a31e3c7b88f14549055f7cd79faef6e6d..caac360bfa6981dd8be272e32df67efd0c2c26b0 100644
+--- a/apps/web/components/indexing/IndexPersonalSelect.vue
++++ b/apps/web/components/indexing/IndexPersonalSelect.vue
+@@ -1,19 +1,21 @@
+ <script setup lang="ts">
++import type { ContentTypeCode } from '~/types/content'
+ import type { IndexOption } from '~/composables/useIndexRuntime'
+ 
+-const props=defineProps<{code:string;label:string;modelValue:unknown;multi?:boolean;allowsPersonal?:boolean;parent?:string;personalParentOption?:IndexOption|null;adminPreview?:boolean;placeholder?:string;helpText?:string;required?:boolean}>()
++const props=defineProps<{code:string;label:string;contentType?:ContentTypeCode;modelValue:unknown;multi?:boolean;allowsPersonal?:boolean;parent?:string;personalParentOption?:IndexOption|null;adminPreview?:boolean;placeholder?:string;helpText?:string;required?:boolean}>()
+ const emit=defineEmits<{(e:'update:modelValue',value:IndexOption|IndexOption[]|null):void}>()
+ const api=useIndexRuntime(props.adminPreview?'admin-preview':'user')
+ const q=ref(''),items=ref<IndexOption[]>([]),busy=ref(false),open=ref(false),selected=ref<IndexOption[]>([])
+ 
+-const refresh=async()=>{busy.value=true;try{const r=await api.options(props.code,q.value,props.parent||'');items.value=r.items||[]}finally{busy.value=false}}
++let requestSequence=0
++const refresh=async()=>{const request=++requestSequence;busy.value=true;items.value=[];try{const r=await api.options(props.code,q.value,props.parent||'',props.personalParentOption,props.contentType);if(request===requestSequence)items.value=r.items||[]}finally{if(request===requestSequence)busy.value=false}}
+ watch(()=>props.modelValue,v=>{selected.value=Array.isArray(v)?(v as IndexOption[]):(v?[v as IndexOption]:[])},{immediate:true,deep:true})
+ watch(q,()=>{open.value=true;void refresh()})
+-watch(()=>props.parent,()=>{if(open.value)void refresh()})
++watch(()=>[props.parent,props.personalParentOption?.id,props.personalParentOption?.scope],()=>{items.value=[];requestSequence++;if(open.value)void refresh()})
+ const choose=(x:IndexOption)=>{if(props.multi){if(!selected.value.some(y=>y.id===x.id&&y.scope===x.scope))selected.value=[...selected.value,x]}else selected.value=[x];emit('update:modelValue',props.multi?selected.value:(selected.value[0]||null));q.value='';open.value=false}
+ const remove=(x:IndexOption)=>{selected.value=selected.value.filter(y=>!(y.id===x.id&&y.scope===x.scope));emit('update:modelValue',props.multi?selected.value:(selected.value[0]||null))}
+ const canAdd=computed(()=>!props.adminPreview&&props.allowsPersonal&&q.value.trim().length>1&&!items.value.some(x=>x.title===q.value.trim()))
+-const add=async()=>{const parent=props.personalParentOption??null;const parentSystemTermId=parent?.scope==='system'?parent.id:undefined;const parentUserTermId=parent?.scope==='personal'?parent.id:undefined;const r=await api.addPersonal(props.code,q.value.trim(),parentSystemTermId,parentUserTermId);choose(r.item)}
++const add=async()=>{const parent=props.personalParentOption??null;const parentSystemTermId=parent?.scope==='system'?parent.id:undefined;const parentUserTermId=parent?.scope==='personal'?parent.id:undefined;const r=await api.addPersonal(props.code,q.value.trim(),parentSystemTermId,parentUserTermId,props.contentType);choose(r.item)}
+ onMounted(()=>void refresh())
+ </script>
+ <template><div class="ips"><label>{{label}} <em v-if="required">*</em></label><small v-if="helpText" class="help">{{helpText}}</small><div class="chips"><span v-for="x in selected" :key="x.scope+'-'+x.id" :class="['chip',x.scope]">{{x.title}}<small v-if="x.scope==='personal'">شخصی</small><button type="button" @click="remove(x)">×</button></span></div><div class="search"><input v-model="q" type="search" :placeholder="placeholder||`جست‌وجوی ${label}…`" @focus="open=true;refresh()"><div v-if="open" class="drop"><button v-for="x in items" :key="x.scope+'-'+x.id" type="button" @click="choose(x)"><span>{{x.title}}</span><small>{{x.scope==='personal'?'شخصی من':'عمومی'}}</small></button><button v-if="canAdd" class="add" type="button" @click="add">+ افزودن «{{q.trim()}}» به موارد شخصی من</button><p v-if="busy">در حال جست‌وجو…</p><p v-else-if="!items.length&&!canAdd">موردی پیدا نشد.</p></div></div></div></template>
+diff --git a/apps/web/components/indexing/IndexRuntimePanel.vue b/apps/web/components/indexing/IndexRuntimePanel.vue
+index 60eaa8b8ec09b21f08ec4fd52d381d534f464572..64e92820867e8686ca8fec2bfaf5a0254e10a2ff 100644
+--- a/apps/web/components/indexing/IndexRuntimePanel.vue
++++ b/apps/web/components/indexing/IndexRuntimePanel.vue
+@@ -1,4 +1,5 @@
+ <script setup lang="ts">
++import { hierarchyOrder, hierarchyDepth, descendants } from '~/utils/indexHierarchy'
+ import IndexDynamicField from '~/components/indexing/IndexDynamicField.vue'
+ import IndexPersonalSelect from '~/components/indexing/IndexPersonalSelect.vue'
+ import { defaultFor, validateField, visibleField } from '~/utils/indexFieldRuntime'
+@@ -16,24 +17,33 @@ const topicCodes=['IDX-001','IDX-003','IDX-002','IDX-004']
+ const clone=<T>(value:T):T=>JSON.parse(JSON.stringify(value)) as T
+ const field=(code:string):IndexFieldDefinition|undefined=>schema.value?.fields?.find(x=>x.code===code||x.taxonomyCode===code)
+ const hasTopicAnalysis=computed(()=>topicCodes.every(code=>Boolean(field(code))))
+-const normalFields=computed(()=>schema.value?.fields?.filter(x=>!hasTopicAnalysis.value||!topicCodes.includes(x.code))||[])
++const schemaNodes=computed(()=>(schema.value?.fields??[]).map(f=>({key:f.key||f.code,parentKey:f.parentKey||null,field:f})))
++const orderedFields=computed(()=>{try{return hierarchyOrder(schemaNodes.value).map(n=>n.field)}catch{return schema.value?.fields??[]}})
++const analysisFields=computed(()=>{if(!hasTopicAnalysis.value)return [];const topic=field('IDX-001');const keys=new Set(topic?descendants(schemaNodes.value,topic.key||topic.code):[]);return orderedFields.value.filter(f=>topicCodes.includes(f.code)||keys.has(f.key||f.code))})
++const normalFields=computed(()=>orderedFields.value.filter(f=>!analysisFields.value.includes(f)))
++const depthFor=(f:IndexFieldDefinition)=>{try{return hierarchyDepth(schemaNodes.value,f.key||f.code)}catch{return 0}}
+ const pageIndex=ref(0),attempted=ref(false)
+ const formPages=computed(()=>{const pages:{title:string;fields:IndexFieldDefinition[]}[]=[{title:'شروع',fields:[]}];for(const f of normalFields.value){if(f.type==='page')pages.push({title:f.title,fields:[]});else pages[pages.length-1]!.fields.push(f)}return pages})
+ const currentFields=computed(()=>formPages.value[pageIndex.value]?.fields??[])
+-const fieldErrors=computed(()=>{const out:Record<string,string>={};for(const f of schema.value?.fields??[]){if(!isVisible(f)||topicCodes.includes(f.code)&&hasTopicAnalysis.value)continue;out[f.code]=validateField({...f,required:attempted.value&&f.required},data[f.code])}return out})
+-const validate=(all=true):boolean=>{attempted.value=true;if(hasTopicAnalysis.value&&(all||pageIndex.value===0)){for(const row of data.topicAnalyses){for(const [code,key] of [['IDX-001','topic'],['IDX-003','processingKey'],['IDX-002','subtopic'],['IDX-004','interpretation']] as const){const f=field(code);if(f&&validateField(f,row[key])){pageIndex.value=0;errorMessage.value=`فیلد «${f.title}» در تحلیل موضوعی را تکمیل کنید.`;return false}}}}const fields=all?normalFields.value:currentFields.value;const invalid=fields.find(f=>isVisible(f)&&validateField(f,data[f.code]));if(invalid){const i=formPages.value.findIndex(p=>p.fields.some(f=>f.code===invalid.code));if(i>=0)pageIndex.value=i;errorMessage.value='فیلدهای مشخص‌شده را بررسی کنید.';return false}errorMessage.value='';return true}
++const fieldErrors=computed(()=>{const out:Record<string,string>={};for(const f of schema.value?.fields??[]){if(!isVisible(f)||parentPending(f)||analysisFields.value.includes(f))continue;out[f.code]=validateField({...f,required:attempted.value&&f.required},data[f.code])}return out})
++const validate=(all=true):boolean=>{attempted.value=true;if(hasTopicAnalysis.value&&(all||pageIndex.value===0)){for(const row of data.topicAnalyses){for(const f of analysisFields.value){if(!parentPending(f,row)&&validateField(f,valueFor(f,row))){pageIndex.value=0;errorMessage.value=`فیلد «${f.title}» در تحلیل موضوعی را تکمیل کنید.`;return false}}}}const fields=all?normalFields.value:currentFields.value;const invalid=fields.find(f=>isVisible(f)&&!parentPending(f)&&validateField(f,data[f.code]));if(invalid){const i=formPages.value.findIndex(p=>p.fields.some(f=>f.code===invalid.code));if(i>=0)pageIndex.value=i;errorMessage.value='فیلدهای مشخص‌شده را بررسی کنید.';return false}errorMessage.value='';return true}
+ const nextPage=()=>{if(validate(false))pageIndex.value=Math.min(pageIndex.value+1,formPages.value.length-1)}
+ defineExpose({validate})
+ const ensureAnalyses=()=>{if(!Array.isArray(data.topicAnalyses))data.topicAnalyses=[];if(hasTopicAnalysis.value&&!data.topicAnalyses.length)addAnalysis()}
+ const applyPayload=(payload:IndexPayload|undefined)=>{for(const key of Object.keys(data))delete data[key];Object.assign(data,clone(payload??{topicAnalyses:[]}));for(const f of schema.value?.fields??[]){const value=defaultFor(f);if(data[f.code]===undefined&&value!==undefined)data[f.code]=value}pageIndex.value=0;attempted.value=false;ensureAnalyses()}
+ const addAnalysis=()=>data.topicAnalyses.push({topic:null,processingKey:null,subtopic:null,interpretation:''})
+ const removeAnalysis=(i:number)=>data.topicAnalyses.splice(i,1)
+-const setAnalysisValue=(i:number,key:'topic'|'processingKey'|'subtopic'|'interpretation',value:unknown)=>{const row=data.topicAnalyses[i];if(!row)return;if(key==='interpretation')row.interpretation=String(value??'');else{if(key==='topic'&&JSON.stringify(row.topic)!==JSON.stringify(value))row.subtopic=null;row[key]=value as IndexOption|null}}
+-const selection=(value:unknown):IndexOption|null=>Array.isArray(value)?((value[0] as IndexOption|undefined)??null):((value as IndexOption|null)??null)
+-const selectionTitle=(value:unknown):string=>selection(value)?.title??''
++const analysisKey=(f:IndexFieldDefinition):string=>({'IDX-001':'topic','IDX-003':'processingKey','IDX-002':'subtopic','IDX-004':'interpretation'} as Record<string,string>)[f.code]??f.code
++const valueFor=(f:IndexFieldDefinition,row?:unknown):unknown=>row?(row as Record<string,unknown>)[analysisKey(f)]:data[f.code]
++const setFieldValue=(f:IndexFieldDefinition,value:unknown,row?:unknown)=>{const values=(row??data) as Record<string,unknown>;const key=row?analysisKey(f):f.code;if(JSON.stringify(values[key])!==JSON.stringify(value)){for(const childKey of descendants(schemaNodes.value,f.key||f.code)){const child=orderedFields.value.find(x=>(x.key||x.code)===childKey);if(child)values[row?analysisKey(child):child.code]=null}}values[key]=value}
++const selection=(value:unknown):IndexOption|null=>{const selected=Array.isArray(value)?value[0]:value;return selected&&typeof selected==='object'?selected as IndexOption:null}
++const selectionTitle=(value:unknown):string=>selection(value)?.title??(typeof value==='string'||typeof value==='number'?String(value):'')
+ const fieldByTaxonomy=(code:string):IndexFieldDefinition|undefined=>schema.value?.fields?.find(x=>x.taxonomyCode===code||x.code===code)
+-const parentFor=(f:IndexFieldDefinition):string=>{if(!f.parentTaxonomyCode)return'';const p=fieldByTaxonomy(f.parentTaxonomyCode);return p?selectionTitle(data[p.code]):''}
+-const personalParentFor=(f:IndexFieldDefinition):IndexOption|null=>{if(!f.parentTaxonomyCode)return null;const p=fieldByTaxonomy(f.parentTaxonomyCode);return p?selection(data[p.code]):null}
++const parentField=(f:IndexFieldDefinition):IndexFieldDefinition|undefined=>f.parentKey?orderedFields.value.find(p=>(p.key||p.code)===f.parentKey):f.parentTaxonomyCode?fieldByTaxonomy(f.parentTaxonomyCode):undefined
++const parentFor=(f:IndexFieldDefinition,row?:unknown):string=>{const parent=parentField(f);return parent?selectionTitle(valueFor(parent,analysisFields.value.includes(parent)?row:undefined)):''}
++const personalParentFor=(f:IndexFieldDefinition,row?:unknown):IndexOption|null=>{const parent=parentField(f);return parent?selection(valueFor(parent,analysisFields.value.includes(parent)?row:undefined)):null}
++const parentPending=(f:IndexFieldDefinition,row?:unknown):boolean=>{const parent=parentField(f);return Boolean(parent&&['select','searchable_select','multiselect','radio','checkbox','tags'].includes(parent.type)&&!parentFor(f,row))}
++
+ const widthFor=(f:IndexFieldDefinition):number=>{const n=Number((f.settings??{}).width??100);return n>=25&&n<=100?n:100}
+ const comparable=(value:unknown):string=>{if(value===null||value===undefined)return'';if(Array.isArray(value))return value.map(comparable).join('|');if(typeof value==='object'){const v=value as Record<string,unknown>;return String(v.title??v.label??v.value??v.id??'')}return String(value)}
+ const isVisible=(f:IndexFieldDefinition):boolean=>!f.config?.condition||visibleField(f,schema.value?.fields??[],data)
+@@ -75,10 +85,11 @@ onMounted(()=>void load())
+    <div class="section-title"><div><h3>تحلیل موضوعی</h3><p>{{schema.topicAnalysis.label||'موضوع، کلید پردازش، زیرموضوع و برداشت'}}</p></div><button type="button" @click="addAnalysis">+ موضوع دیگر</button></div>
+    <article v-for="(a,i) in data.topicAnalyses" :key="i" class="analysis-card">
+     <div class="grid">
+-     <IndexDynamicField v-if="field('IDX-001')" :admin-preview="props.adminPreview" :field="field('IDX-001')!" :model-value="a.topic" @update:model-value="setAnalysisValue(i,'topic',$event)"/>
+-     <IndexDynamicField v-if="field('IDX-003')" :admin-preview="props.adminPreview" :field="field('IDX-003')!" :model-value="a.processingKey" @update:model-value="setAnalysisValue(i,'processingKey',$event)"/>
+-     <IndexDynamicField v-if="field('IDX-002')" :admin-preview="props.adminPreview" :field="field('IDX-002')!" :model-value="a.subtopic" :parent="selectionTitle(a.topic)" :personal-parent-option="selection(a.topic)" @update:model-value="setAnalysisValue(i,'subtopic',$event)"/>
+-     <IndexDynamicField v-if="field('IDX-004')" :admin-preview="props.adminPreview" :field="field('IDX-004')!" :model-value="a.interpretation" @update:model-value="setAnalysisValue(i,'interpretation',$event)"/>
++     <fieldset v-for="f in analysisFields" :key="f.code" class="tree-runtime-field" :disabled="parentPending(f,a)" :style="{marginInlineStart:`${depthFor(f)*22}px`}" :data-depth="depthFor(f)">
++      <small v-if="parentField(f)" class="parent-label">ذیل {{parentField(f)?.title}}</small>
++      <IndexDynamicField :admin-preview="props.adminPreview" :field="f" :model-value="valueFor(f,a)" :parent="parentFor(f,a)" :personal-parent-option="personalParentFor(f,a)" :content-type="contentType" :fields="schema.fields" :form-values="data" @update:model-value="setFieldValue(f,$event,a)"/>
++      <small v-if="parentPending(f,a)">ابتدا {{parentField(f)?.title}} را انتخاب کنید.</small>
++     </fieldset>
+     </div>
+     <button v-if="data.topicAnalyses.length>1" class="remove" type="button" @click="removeAnalysis(i)">حذف این تحلیل</button>
+    </article>
+@@ -86,10 +97,10 @@ onMounted(()=>void load())
+ 
+   <div v-if="normalFields.length" class="fields">
+    <template v-for="f in currentFields" :key="f.code">
+-    <div v-if="isVisible(f)" class="runtime-field" :style="{gridColumn:`span ${Math.round(widthFor(f)/100*12)}`} ">
+-     <IndexPersonalSelect v-if="f.type==='taxonomy'||f.type==='choice'" :admin-preview="props.adminPreview" :code="f.code" :label="f.title" :multi="f.multi" :allows-personal="f.allowsPersonal" :parent="parentFor(f)" :personal-parent-option="personalParentFor(f)" :model-value="data[f.code]" @update:model-value="data[f.code]=$event"/>
+-     <IndexDynamicField v-else :admin-preview="props.adminPreview" :field="f" :model-value="data[f.code]" :parent="parentFor(f)" :personal-parent-option="personalParentFor(f)" :content-type="contentType" :fields="schema.fields" :form-values="data" :error="fieldErrors[f.code]" @update:model-value="data[f.code]=$event"/>
+-    </div>
++    <fieldset v-if="isVisible(f)" class="runtime-field tree-runtime-field" :disabled="parentPending(f)" :style="{gridColumn:depthFor(f)?'1 / -1':`span ${Math.round(widthFor(f)/100*12)}`,marginInlineStart:`${depthFor(f)*22}px`}" :data-depth="depthFor(f)"><small v-if="parentField(f)" class="parent-label">ذیل {{parentField(f)?.title}}</small>
++     <IndexPersonalSelect v-if="f.type==='taxonomy'||f.type==='choice'" :admin-preview="props.adminPreview" :code="f.code" :label="f.title" :content-type="contentType" :multi="f.multi" :allows-personal="f.allowsPersonal" :parent="parentFor(f)" :personal-parent-option="personalParentFor(f)" :model-value="data[f.code]" @update:model-value="setFieldValue(f,$event)"/>
++     <IndexDynamicField v-else :admin-preview="props.adminPreview" :field="f" :model-value="data[f.code]" :parent="parentFor(f)" :personal-parent-option="personalParentFor(f)" :content-type="contentType" :fields="schema.fields" :form-values="data" :error="fieldErrors[f.code]" @update:model-value="setFieldValue(f,$event)"/>
++    <small v-if="parentPending(f)">ابتدا {{parentField(f)?.title}} را انتخاب کنید.</small></fieldset>
+    </template>
+   </div>
+   <div v-else-if="!hasTopicAnalysis" class="empty">برای این فرم هنوز المنتی منتشر نشده است.</div>
+@@ -103,4 +114,5 @@ onMounted(()=>void load())
+ .index-panel{display:grid;gap:18px}.index-head{display:flex;align-items:center;justify-content:space-between;gap:14px;background:#fff;border:1px solid #e5e8ed;border-radius:18px;padding:18px}.index-panel h2,.index-panel h3{margin:0}.index-panel p{margin:5px 0 0;color:#6c7480}.save,.section-title button{border:0;border-radius:12px;padding:10px 16px;background:#102b4e;color:white;font-weight:800;cursor:pointer}.analysis{display:grid;gap:12px}.section-title{display:flex;justify-content:space-between;align-items:end;gap:12px}.analysis-card{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px}.grid,.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.fields{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px}.runtime-field{min-width:0}.remove{margin-top:12px;border:0;background:#fff1f1;color:#a62828;padding:7px 10px;border-radius:9px;cursor:pointer}.saved{color:#087b56;font-weight:800}.loading,.empty{padding:24px;text-align:center;color:#7d8898}.error{padding:12px 14px;border-radius:12px;background:#fff1f1;color:#9e2525;font-weight:700}@media(max-width:760px){.grid,.fields{grid-template-columns:1fr}.index-head,.section-title{align-items:stretch;flex-direction:column}}
+ 
+ .fields{grid-template-columns:repeat(12,minmax(0,1fr))}.page-steps{display:flex;gap:8px;flex-wrap:wrap}.page-steps span{border-radius:8px;background:#f0f3f7;color:#687b92;padding:8px 12px}.page-steps .active{background:#102b4e;color:#fff}.page-controls{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #e5ebf1;padding-top:12px}.page-controls button{border:0;border-radius:8px;background:#102b4e;color:#fff;padding:9px 16px}.page-controls button:disabled{opacity:.4}@media(max-width:760px){.fields{grid-template-columns:1fr}.runtime-field{grid-column:1/-1!important}}.index-panel :deep(.hidden-field){opacity:.7}
++.tree-runtime-field{border:0;padding:0;margin:0;min-width:0;display:grid;gap:7px}.tree-runtime-field[data-depth]:not([data-depth="0"]){border-inline-start:2px solid #b7cee4;padding-inline-start:12px;grid-column:1/-1}.tree-runtime-field:disabled{opacity:.55}.parent-label{color:#39658c;font-weight:700}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ </style>
+diff --git a/apps/web/composables/useAdminRuntimeIndex.ts b/apps/web/composables/useAdminRuntimeIndex.ts
+index 63f9780ccaa4e4a62aa41c6642b729f215a2ddf6..5ac411bb95c78409726b5b46c166e91238075667 100644
+--- a/apps/web/composables/useAdminRuntimeIndex.ts
++++ b/apps/web/composables/useAdminRuntimeIndex.ts
+@@ -12,8 +12,8 @@ export const useAdminRuntimeIndex=()=>{
+  const reorder=async(contentType:RuntimeContentTypeCode,codes:string[]):Promise<AdminRuntimeOverview>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/post-types/${contentType}/reorder`,{method:'POST',headers:headers(),body:{TaxonomyCodes:codes}}))
+  const updateTaxonomy=async(code:string,body:{Title?:string;FieldType?:string;IsMulti?:boolean;AllowsPersonal?:boolean;IsActive?:boolean;Metadata?:Record<string,unknown>}):Promise<{ok:boolean}>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/taxonomies/${code}`,{method:'PATCH',headers:headers(),body}))
+  const terms=async(code:string,q='',page=1,pageSize=50,includeInactive=false):Promise<AdminRuntimeTermsResponse>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/taxonomies/${code}/terms`,{headers:headers(),query:{q,page,pageSize,includeInactive}}))
+- const createTerm=async(code:string,body:{Title:string;ParentHint?:string;SortOrder?:number;Metadata?:Record<string,unknown>}):Promise<Record<string,unknown>>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/taxonomies/${code}/terms`,{method:'POST',headers:headers(),body}))
+- const updateTerm=async(code:string,id:string,body:{Title?:string;ParentHint?:string;SortOrder?:number;IsActive?:boolean;Metadata?:Record<string,unknown>}):Promise<Record<string,unknown>>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/taxonomies/${code}/terms/${id}`,{method:'PATCH',headers:headers(),body}))
++ const createTerm=async(code:string,body:{Title:string;ParentHint?:string;ParentId?:string;SortOrder?:number;Metadata?:Record<string,unknown>}):Promise<Record<string,unknown>>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/taxonomies/${code}/terms`,{method:'POST',headers:headers(),body}))
++ const updateTerm=async(code:string,id:string,body:{Title?:string;ParentHint?:string;ParentId?:string;SortOrder?:number;IsActive?:boolean;Metadata?:Record<string,unknown>}):Promise<Record<string,unknown>>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/taxonomies/${code}/terms/${id}`,{method:'PATCH',headers:headers(),body}))
+  const deleteTerm=async(code:string,id:string):Promise<{ok:boolean}>=>unwrap(await $fetch(`/api/admin/runtime-index/v1/taxonomies/${code}/terms/${id}`,{method:'DELETE',headers:headers()}))
+  return{overview,assignField,updateField,removeField,reorder,updateTaxonomy,terms,createTerm,updateTerm,deleteTerm}
+ }
+diff --git a/apps/web/composables/useIndexRuntime.ts b/apps/web/composables/useIndexRuntime.ts
+index 5417300bda163e3468cbf675b893bd21474e6be6..ec53ebe15c088a7a439a765f065e793b8ed46ee3 100644
+--- a/apps/web/composables/useIndexRuntime.ts
++++ b/apps/web/composables/useIndexRuntime.ts
+@@ -20,6 +20,7 @@ export interface IndexFieldDefinition {
+  indexEnabled?:boolean
+  taxonomyCode?:string|null
+  sourceMode?:IndexSourceMode|string
++ parentKey?:string|null
+  parentTaxonomyCode?:string|null
+  settings?:Record<string,unknown>
+  config?:Record<string,unknown>
+@@ -45,8 +46,8 @@ export const useIndexRuntime=(mode:'user'|'admin-preview'='user')=>{
+   return response as T
+  }
+  const schema=async(t:ContentTypeCode):Promise<IndexSchema>=>unwrap(await $fetch<ApiEnvelope<IndexSchema>|IndexSchema>(mode==='admin-preview'?`/api/admin/runtime-index/v1/preview/schema/${t}`:`/api/v1/index-runtime/schema/${t}`,{headers:headers()}))
+- const options=async(code:string,q='',parent=''):Promise<IndexOptionsResponse>=>unwrap(await $fetch<ApiEnvelope<IndexOptionsResponse>|IndexOptionsResponse>(mode==='admin-preview'?`/api/admin/runtime-index/v1/preview/taxonomies/${code}/options`:`/api/v1/index-runtime/taxonomies/${code}/options`,{headers:headers(),query:{q,parent}}))
+- const addPersonal=async(code:string,title:string,parentSystemTermId?:number|string,parentUserTermId?:number|string):Promise<{created:boolean;useExisting?:boolean;item:IndexOption}>=>{if(mode==='admin-preview')throw new Error('افزودن مورد شخصی در پیش‌نمایش مدیریت غیرفعال است.');return unwrap(await $fetch(`/api/v1/index-runtime/taxonomies/${code}/personal`,{method:'POST',headers:headers(),body:{title,parentSystemTermId,parentUserTermId}})) as {created:boolean;useExisting?:boolean;item:IndexOption}}
++ const options=async(code:string,q='',parent='',parentOption?:IndexOption|null,contentType?:ContentTypeCode):Promise<IndexOptionsResponse>=>unwrap(await $fetch<ApiEnvelope<IndexOptionsResponse>|IndexOptionsResponse>(mode==='admin-preview'?`/api/admin/runtime-index/v1/preview/taxonomies/${code}/options`:`/api/v1/index-runtime/taxonomies/${code}/options`,{headers:headers(),query:{q,parent,parentId:parentOption?.id,parentScope:parentOption?.scope,contentType}}))
++ const addPersonal=async(code:string,title:string,parentSystemTermId?:number|string,parentUserTermId?:number|string,contentType?:ContentTypeCode):Promise<{created:boolean;useExisting?:boolean;item:IndexOption}>=>{if(mode==='admin-preview')throw new Error('افزودن مورد شخصی در پیش‌نمایش مدیریت غیرفعال است.');return unwrap(await $fetch(`/api/v1/index-runtime/taxonomies/${code}/personal`,{method:'POST',headers:headers(),body:{title,parentSystemTermId,parentUserTermId,contentType}})) as {created:boolean;useExisting?:boolean;item:IndexOption}}
+  const load=async(t:ContentTypeCode,id:string):Promise<IndexPayloadResponse>=>unwrap(await $fetch<ApiEnvelope<IndexPayloadResponse>|IndexPayloadResponse>(`/api/v1/index-runtime/${t}/${id}`,{headers:headers()}))
+  const save=async(t:ContentTypeCode,id:string,payload:IndexPayload):Promise<{ok:boolean;updatedAt?:string}>=>unwrap(await $fetch(`/api/v1/index-runtime/${t}/${id}`,{method:'POST',headers:headers(),body:{payload}})) as {ok:boolean;updatedAt?:string}
+  const uploadFile=async(t:ContentTypeCode,key:string,file:File):Promise<{id:string;name:string;size:number;type:string}>=>{if(mode==='admin-preview')throw new Error('بارگذاری فایل در پیش‌نمایش انجام نمی‌شود.');const body=new FormData();body.append('contentType',t);body.append('fieldKey',key);body.append('file',file);const h=headers();delete h['Content-Type'];delete h['content-type'];return unwrap(await $fetch('/api/v1/index-runtime/files/upload',{method:'POST',headers:h,body}))}
+diff --git a/apps/web/pages/admin/index-builder.vue b/apps/web/pages/admin/index-builder.vue
+index eea3258e03d96eeb1d0bc196c7762b130fa131da..a9e98ba4994393d53fb630709a4fab217bd134a5 100644
+--- a/apps/web/pages/admin/index-builder.vue
++++ b/apps/web/pages/admin/index-builder.vue
+@@ -1,5 +1,6 @@
+ <script setup lang="ts">
+ import IndexRuntimePanel from '~/components/indexing/IndexRuntimePanel.vue'
++import { hierarchyOrder, hierarchyDepth, descendants, validateHierarchy } from '~/utils/indexHierarchy'
+ import { calculate } from '~/utils/indexFieldRuntime'
+ import type { CurrentUserResponse } from '~/types/auth'
+ import type { AdminContentStudioOverview,AdminFieldCatalogItem,AdminIndexField,AdminIndexFormDetail } from '~/types/admin-content-studio'
+@@ -23,11 +24,11 @@ const icons:Record<string,string>={text:'T',textarea:'¶',richtext:'B',number:'#
+ 
+ const termOpen=ref(false),termBusy=ref(false),termSearch=ref(''),termIncludeInactive=ref(false),termPage=ref(1),termData=ref<AdminRuntimeTermsResponse|null>(null)
+ const editingTermId=ref<string|null>(null),parentSearch=ref(''),parentCandidates=ref<AdminRuntimeTerm[]>([])
+-const termForm=reactive({Title:'',ParentHint:'',SortOrder:0,IsActive:true})
++const termForm=reactive({Title:'',ParentHint:'',ParentId:'',SortOrder:0,IsActive:true})
+ 
+ const fieldForm=reactive({
+  Key:'',Label:'',InputKind:'text',ValueKind:'string',HelpText:'',Placeholder:'',Width:100,Required:false,SearchEnabled:true,IndexEnabled:true,
+- SourceMode:'none',TaxonomyCode:'',Html:'',
++ SourceMode:'none',TaxonomyCode:'',ParentKey:'',AllowsPersonal:false,Html:'',
+  ConditionEnabled:false,ConditionField:'',ConditionOperator:'equals',ConditionValue:'',ConditionAction:'show',
+  Options:[] as {Label:string;Value:string}[],
+ })
+@@ -36,7 +37,14 @@ const initialType=():RuntimeContentTypeCode=>{const q=String(route.query.content
+ const fa=(v:number)=>new Intl.NumberFormat('fa-IR').format(v)
+ const selectedField=computed(()=>form.value?.Fields.find(v=>v.Id===selectedFieldId.value)??null)
+ const selectedTypeInfo=computed(()=>runtimeData.value?.ContentTypes.find(v=>v.Code===selectedType.value)??null)
+-const selectedTaxonomy=computed(()=>runtimeData.value?.Taxonomies.find(v=>v.Code===fieldForm.TaxonomyCode)??null)
++const treeNodes=computed(()=>(form.value?.Fields??[]).map(f=>({key:f.Key,parentKey:String((f.Config?.hierarchy as Record<string,unknown>|undefined)?.parentKey??'')||null,field:f})))
++const designFields=computed(()=>{try{return hierarchyOrder(treeNodes.value).map(n=>n.field)}catch{return form.value?.Fields??[]}})
++const fieldDepth=(f:AdminIndexField)=>{try{return hierarchyDepth(treeNodes.value,f.Key)}catch{return 0}}
++const parentKeyFor=(f:AdminIndexField)=>String((f.Config?.hierarchy as Record<string,unknown>|undefined)?.parentKey??'')
++const parentFieldFor=(f:AdminIndexField)=>form.value?.Fields.find(p=>p.Key===parentKeyFor(f))??null
++const pathFor=(f:AdminIndexField):string=>{const chain:string[]=[];const seen=new Set<string>();let node:AdminIndexField|null=f;while(node&&!seen.has(node.Key)){seen.add(node.Key);chain.unshift(node.Label);node=parentFieldFor(node)}return chain.join(' / ')}
++const parentCandidatesForField=computed(()=>{const f=selectedField.value;if(!f)return [];const blocked=new Set([f.Key,...descendants(treeNodes.value,f.Key)]);return designFields.value.filter(p=>!blocked.has(p.Key)&&fieldDepth(p)<3&&!['page','html','hidden'].includes(p.InputKind))})
++const selectedTaxonomy=computed<AdminRuntimeTaxonomy|null>(()=>{const f=selectedField.value;if(!f||!fieldForm.TaxonomyCode)return null;const parent=form.value?.Fields.find(p=>p.Key===fieldForm.ParentKey);return {Code:fieldForm.TaxonomyCode,Title:fieldForm.Label,LegacyTitle:null,FieldType:fieldForm.InputKind,IsMulti:['multiselect','tags','checkbox'].includes(fieldForm.InputKind),AllowsPersonal:fieldForm.AllowsPersonal,Metadata:{},IsActive:true,ActiveTermCount:0,TotalTermCount:0,Assigned:true,SortOrder:f.DisplayOrder,IsRequired:fieldForm.Required,Settings:{},ParentTaxonomyCode:parent?fieldTaxonomyCode(parent)||null:null}})
+ const sourceCapable=computed(()=>['select','searchable_select','multiselect','radio','checkbox','tags','image_choice','price_option'].includes(fieldForm.InputKind))
+ const manualOptionsEnabled=computed(()=>sourceCapable.value&&fieldForm.SourceMode==='manual')
+ watch(()=>fieldForm.InputKind,kind=>{if(kind!==selectedField.value?.InputKind){const item=studioData.value?.FieldCatalog.find(x=>x.Kind===kind);if(item)fieldForm.ValueKind=item.ValueKind;if(['image_choice','price_option'].includes(kind))fieldForm.SourceMode='manual'}})
+@@ -48,18 +56,18 @@ const paletteGroups=computed(()=>{
+  return [...groups.entries()].map(([name,items])=>({name,items}))
+ })
+ const fieldKindTitle=(kind:string)=>studioData.value?.FieldCatalog.find(x=>x.Kind===kind)?.Title??kind
+-const taxonomyTitle=(code:string)=>runtimeData.value?.Taxonomies.find(x=>x.Code===code)?.Title??code
++const taxonomyTitle=(code:string)=>form.value?.Fields.find(x=>fieldTaxonomyCode(x)===code)?.Label??code
+ const fieldTaxonomyCode=(f:AdminIndexField):string=>{const runtimeCfg=(f.Config?.runtime&&typeof f.Config.runtime==='object'&&!Array.isArray(f.Config.runtime)?f.Config.runtime:{}) as Record<string,unknown>;return String(runtimeCfg.taxonomyCode??'')}
+-const taxonomyTools=computed(()=>(runtimeData.value?.Taxonomies??[]).filter(t=>!elementSearch.value||(`${t.Title} ${t.Code}`).includes(elementSearch.value)))
++
+ 
+ const syncFieldForm=()=>{
+  const f=selectedField.value
+- if(!f){Object.assign(fieldForm,{Key:'',Label:'',InputKind:'text',ValueKind:'string',HelpText:'',Placeholder:'',Width:100,Required:false,SearchEnabled:true,IndexEnabled:true,SourceMode:'none',TaxonomyCode:'',Html:'',ConditionEnabled:false,ConditionField:'',ConditionOperator:'equals',ConditionValue:'',ConditionAction:'show',Options:[]});return}
++ if(!f){Object.assign(fieldForm,{Key:'',Label:'',InputKind:'text',ValueKind:'string',HelpText:'',Placeholder:'',Width:100,Required:false,SearchEnabled:true,IndexEnabled:true,SourceMode:'none',TaxonomyCode:'',ParentKey:'',AllowsPersonal:false,Html:'',ConditionEnabled:false,ConditionField:'',ConditionOperator:'equals',ConditionValue:'',ConditionAction:'show',Options:[]});return}
+  const runtimeCfg=(f.Config?.runtime&&typeof f.Config.runtime==='object'&&!Array.isArray(f.Config.runtime)?f.Config.runtime:{}) as Record<string,unknown>
+  const condition=(f.Config?.condition&&typeof f.Config.condition==='object'&&!Array.isArray(f.Config.condition)?f.Config.condition:{}) as Record<string,unknown>
+  Object.assign(fieldForm,{
+   Key:f.Key,Label:f.Label,InputKind:f.InputKind,ValueKind:f.ValueKind,HelpText:f.HelpText??'',Placeholder:f.Placeholder??'',Width:f.Width,Required:f.Required,
+-  SearchEnabled:f.SearchEnabled,IndexEnabled:f.IndexEnabled,SourceMode:String(runtimeCfg.sourceMode??(f.Options.length?'manual':'none')),TaxonomyCode:String(runtimeCfg.taxonomyCode??''),Html:String(f.Config?.html??''),
++  SearchEnabled:f.SearchEnabled,IndexEnabled:f.IndexEnabled,SourceMode:String(runtimeCfg.sourceMode??(f.Options.length?'manual':'none')),TaxonomyCode:String(runtimeCfg.taxonomyCode??''),ParentKey:parentKeyFor(f),AllowsPersonal:Boolean(runtimeCfg.allowsPersonal),Html:String(f.Config?.html??''),
+   ConditionEnabled:Boolean(condition.enabled),ConditionField:String(condition.fieldKey??''),ConditionOperator:String(condition.operator??'equals'),ConditionValue:String(condition.value??''),ConditionAction:String(condition.action??'show'),
+   Options:f.Options.map(x=>({Label:x.Label,Value:x.Value})),
+  })
+@@ -74,8 +82,8 @@ const load=async(type:RuntimeContentTypeCode=selectedType.value)=>{
+  try{
+   if(!user.value){user.value=await auth.me();if(!user.value?.roles?.includes('system_admin')){await navigateTo('/welcome');return}}
+   selectedType.value=type
+-  const [s,r]=await Promise.all([studio.overview(),runtime.overview(type)])
+-  studioData.value=s;runtimeData.value=r
++  const s=await studio.overview()
++  studioData.value=s;runtimeData.value={SelectedContentType:type,ContentTypes:s.ContentTypes.filter(c=>['mold','full_sermon','supporting'].includes(c.Code)).map(c=>({Code:c.Code as RuntimeContentTypeCode,Title:c.Title,Description:c.Description,Settings:c.Settings,FieldCount:0,RuntimeEnabled:true})),Taxonomies:[],Fields:[],Relations:[]}
+   const ct=s.ContentTypes.find(x=>x.Code===type)
+   if(!ct?.IndexFormId)throw new Error('برای این نوع محتوا فرم نمایه اصلی تعیین نشده است.')
+   form.value=await studio.getIndexForm(ct.IndexFormId)
+@@ -89,14 +97,15 @@ onMounted(()=>void load(initialType()))
+ const changeType=async(type:RuntimeContentTypeCode)=>{if(busy.value||!canLeaveSettings())return;selectedFieldId.value='';sideTab.value='elements';mode.value='design';await router.replace({query:{...route.query,contentType:type}});await load(type)}
+ const selectField=(id:string)=>{if(busy.value||selectedFieldId.value!==id&&!canLeaveSettings())return;selectedFieldId.value=id;sideTab.value='settings';syncFieldForm()}
+ const uniqueKey=(kind:string)=>`field_${kind.replace(/[^a-z0-9_]/g,'_')}_${Date.now().toString(36)}`
+-const addElement=async(item:AdminFieldCatalogItem,index?:number,taxonomy?:AdminRuntimeTaxonomy)=>{
++const addElement=async(item:AdminFieldCatalogItem,index?:number,parentKey='')=>{
+  if(!form.value||busy.value||!canLeaveSettings())return
+- if(taxonomy&&form.value.Fields.some(f=>fieldTaxonomyCode(f)===taxonomy.Code)){errorMessage.value='این نمایه قبلاً در فرم وجود دارد؛ همان فیلد را ویرایش کنید.';return}
++
+  busy.value=true;errorMessage.value=''
+  try{
++  const addedKey=uniqueKey(item.Kind)
+   const choices=['select','searchable_select','multiselect','radio','checkbox','image_choice','price_option'].includes(item.Kind)
+-  form.value=await studio.addField(form.value.Id,{Key:uniqueKey(item.Kind),Label:item.Title,InputKind:item.Kind,ValueKind:item.ValueKind,Required:false,SearchEnabled:true,IndexEnabled:!['section','html','page'].includes(item.Kind),Width:100,Config:{runtime:{sourceMode:taxonomy?'runtime_taxonomy':choices?'manual':'none',taxonomyCode:taxonomy?.Code??null,parentTaxonomyCode:taxonomy?.ParentTaxonomyCode??null},columns:[{key:'value',label:'مقدار'}]},Validation:{},Options:choices&&!taxonomy?[{Label:'گزینه اول',Value:'option_1'},{Label:'گزینه دوم',Value:'option_2'}]:[]})
+-  const added=form.value.Fields.at(-1);selectedFieldId.value=added?.Id??''
++  form.value=await studio.addField(form.value.Id,{Key:addedKey,Label:item.Title,InputKind:item.Kind,ValueKind:item.ValueKind,Required:false,SearchEnabled:true,IndexEnabled:!['section','html','page'].includes(item.Kind),Width:100,Config:{runtime:{sourceMode:choices&&!['image_choice','price_option'].includes(item.Kind)?'runtime_taxonomy':choices?'manual':'none',allowsPersonal:false},hierarchy:{parentKey:parentKey||null},authority:'index-builder',columns:[{key:'value',label:'مقدار'}]},Validation:{},Options:choices&&['image_choice','price_option'].includes(item.Kind)?[{Label:'گزینه اول',Value:'option_1'},{Label:'گزینه دوم',Value:'option_2'}]:[]})
++  const added=form.value.Fields.find(f=>f.Key===addedKey);selectedFieldId.value=added?.Id??''
+   if(index!==undefined&&added){const ordered=form.value.Fields.filter(f=>f.Id!==added.Id);ordered.splice(index,0,added);form.value=await studio.reorder(form.value.Id,ordered.map(f=>f.Id))}
+   sideTab.value='settings';syncFieldForm();previewKey.value+=1
+  }catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'افزودن المنت انجام نشد.'}
+@@ -104,8 +113,8 @@ const addElement=async(item:AdminFieldCatalogItem,index?:number,taxonomy?:AdminR
+ }
+ const buildConfig=()=>{
+  const current=selectedField.value?.Config??{}
+- const taxonomy=selectedTaxonomy.value
+- return {...current,defaultValue:advanced.DefaultValue,rows:advanced.Rows,step:advanced.Step,maxRows:advanced.MaxRows,accept:advanced.Accept,maxFileMB:advanced.MaxFileMB,maxFiles:advanced.MaxFiles,multiple:advanced.Multiple,stars:advanced.Stars,formula:advanced.Formula,price:advanced.Price,currency:advanced.Currency,quantityField:advanced.QuantityField,columns:advanced.Columns,optionImages:advanced.OptionImages,optionPrices:advanced.OptionPrices,html:fieldForm.Html,runtime:{sourceMode:sourceCapable.value?fieldForm.SourceMode:'none',taxonomyCode:fieldForm.TaxonomyCode||null,parentTaxonomyCode:taxonomy?.ParentTaxonomyCode??null},condition:{enabled:fieldForm.ConditionEnabled,fieldKey:fieldForm.ConditionField||null,operator:fieldForm.ConditionOperator,value:fieldForm.ConditionValue,action:fieldForm.ConditionAction,match:advanced.ConditionMatch,rules:[{fieldKey:fieldForm.ConditionField,operator:fieldForm.ConditionOperator,value:fieldForm.ConditionValue},...advanced.ConditionRules]}}
++ const parent=form.value?.Fields.find(f=>f.Key===fieldForm.ParentKey)
++ return {...current,defaultValue:advanced.DefaultValue,rows:advanced.Rows,step:advanced.Step,maxRows:advanced.MaxRows,accept:advanced.Accept,maxFileMB:advanced.MaxFileMB,maxFiles:advanced.MaxFiles,multiple:advanced.Multiple,stars:advanced.Stars,formula:advanced.Formula,price:advanced.Price,currency:advanced.Currency,quantityField:advanced.QuantityField,columns:advanced.Columns,optionImages:advanced.OptionImages,optionPrices:advanced.OptionPrices,html:fieldForm.Html,authority:'index-builder',hierarchy:{parentKey:fieldForm.ParentKey||null},runtime:{sourceMode:sourceCapable.value?fieldForm.SourceMode:'none',taxonomyCode:fieldForm.TaxonomyCode||null,allowsPersonal:fieldForm.AllowsPersonal,parentTaxonomyCode:parent?fieldTaxonomyCode(parent)||null:null},condition:{enabled:fieldForm.ConditionEnabled,fieldKey:fieldForm.ConditionField||null,operator:fieldForm.ConditionOperator,value:fieldForm.ConditionValue,action:fieldForm.ConditionAction,match:advanced.ConditionMatch,rules:[{fieldKey:fieldForm.ConditionField,operator:fieldForm.ConditionOperator,value:fieldForm.ConditionValue},...advanced.ConditionRules]}}
+ }
+ const buildValidation=()=>{const v:Record<string,unknown>={};for(const [key,value] of Object.entries({min:advanced.Min,max:advanced.Max,minLength:advanced.MinLength,maxLength:advanced.MaxLength}))if(value!=='')v[key]=Number(value);if(advanced.Pattern)v.pattern=advanced.Pattern;if(advanced.ValidationMessage)v.message=advanced.ValidationMessage;return v}
+ const saveSettings=async()=>{
+@@ -116,7 +125,7 @@ const saveSettings=async()=>{
+  if(fieldForm.InputKind==='file'&&(advanced.MaxFileMB<=0||advanced.MaxFileMB>10||advanced.MaxFiles<1||advanced.MaxFiles>20)){errorMessage.value='اندازه فایل تا ۱۰ مگابایت و تعداد فایل از ۱ تا ۲۰ مجاز است.';return false}
+  if(['group','list'].includes(fieldForm.InputKind)&&advanced.Columns.some(c=>!/^[a-z][a-z0-9_]*$/.test(c.key))){errorMessage.value='کلید ستون‌ها باید انگلیسی و بدون فاصله باشد.';return false}
+  if(['group','list'].includes(fieldForm.InputKind)&&new Set(advanced.Columns.map(c=>c.key)).size!==advanced.Columns.length){errorMessage.value='کلید ستون‌ها باید یکتا باشد.';return false}
+- if(fieldForm.TaxonomyCode&&form.value.Fields.some(f=>f.Id!==selectedFieldId.value&&fieldTaxonomyCode(f)===fieldForm.TaxonomyCode)){errorMessage.value='اتصال تکراری به یک نمایه مجاز نیست.';return false}
++ try{validateHierarchy(treeNodes.value.map(n=>({key:n.key===selectedField.value!.Key?fieldForm.Key.trim():n.key,parentKey:n.key===selectedField.value!.Key?fieldForm.ParentKey||null:n.parentKey===selectedField.value!.Key?fieldForm.Key.trim():n.parentKey})))}catch(e){errorMessage.value=e instanceof Error?e.message:'ساختار درخت معتبر نیست.';return false}
+  if(fieldForm.InputKind==='calculation'&&(calculate(advanced.Formula,()=>1)===null||advanced.Formula.includes(`{${fieldForm.Key}}`))){errorMessage.value='فرمول معتبر وارد کنید؛ ارجاع به خود فیلد مجاز نیست.';return false}
+  if(advanced.Pattern){try{new RegExp(advanced.Pattern)}catch{errorMessage.value='الگوی اعتبارسنجی معتبر نیست.';return false}}
+  busy.value=true;errorMessage.value=''
+@@ -129,48 +138,57 @@ const saveSettings=async()=>{
+ const removeSelected=async()=>{if(!form.value||!selectedField.value||!confirm(`المنت «${selectedField.value.Label}» حذف شود؟`))return;busy.value=true;try{form.value=await studio.removeField(form.value.Id,selectedField.value.Id);selectedFieldId.value=form.value.Fields[0]?.Id??'';sideTab.value='elements';previewKey.value+=1}catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'حذف المنت انجام نشد.'}finally{busy.value=false}}
+ const addOption=()=>fieldForm.Options.push({Label:`گزینه ${fieldForm.Options.length+1}`,Value:`option_${fieldForm.Options.length+1}`})
+ const removeOption=(index:number)=>fieldForm.Options.splice(index,1)
+-const addTaxonomy=async(t:AdminRuntimeTaxonomy,index?:number)=>{const kind=['taxonomy','choice'].includes(t.FieldType)?(t.IsMulti?'multiselect':'searchable_select'):t.FieldType;const item=studioData.value?.FieldCatalog.find(x=>x.Kind===kind);if(item)await addElement({...item,Title:t.Title},index,t)}
++
+ const startPaletteDrag=(key:string,event:DragEvent)=>{paletteDrag.value=key;dragIndex.value=null;event.dataTransfer?.setData('text/plain',key);if(event.dataTransfer)event.dataTransfer.effectAllowed='copy'}
+ const drop=async(index:number)=>{
+  if(!form.value||busy.value)return
+  const key=paletteDrag.value;paletteDrag.value=''
+- if(key){if(key.startsWith('taxonomy:')){const t=runtimeData.value?.Taxonomies.find(x=>x.Code===key.slice(9));if(t)await addTaxonomy(t,index)}else{const item=studioData.value?.FieldCatalog.find(x=>x.Kind===key);if(item)await addElement(item,index)}return}
++ if(key){const item=studioData.value?.FieldCatalog.find(x=>x.Kind===key);if(item)await addElement(item,index);return}
+  if(dragIndex.value===null||dragIndex.value===index)return
+- const previous=form.value,fields=[...previous.Fields],from=dragIndex.value;dragIndex.value=null
+- const [moved]=fields.splice(from,1);if(!moved)return;fields.splice(index,0,moved);busy.value=true
++ const previous=form.value,fields=[...designFields.value],from=dragIndex.value;dragIndex.value=null
++ const moved=fields[from];if(!moved)return
++ const keys=new Set([moved.Key,...descendants(treeNodes.value,moved.Key)]);const block=fields.filter(f=>keys.has(f.Key));const target=fields[index]
++ if(target&&keys.has(target.Key))return
++ const rest=fields.filter(f=>!keys.has(f.Key));const to=target?rest.findIndex(f=>f.Id===target.Id):rest.length
++ rest.splice(Math.max(0,to),0,...block);fields.splice(0,fields.length,...rest);busy.value=true
+  try{form.value=await studio.reorder(previous.Id,fields.map(v=>v.Id));previewKey.value+=1}catch(e:unknown){form.value=previous;errorMessage.value=e instanceof Error?e.message:'ترتیب فیلدها ذخیره نشد.'}finally{busy.value=false}
+ }
+-const move=async(index:number,delta:number)=>{if(!form.value)return;const to=index+delta;if(to<0||to>=form.value.Fields.length)return;dragIndex.value=index;await drop(to)}
++const move=async(index:number,delta:number)=>{if(!form.value||busy.value)return;const field=designFields.value[index];if(!field)return;const siblings=designFields.value.filter(f=>parentKeyFor(f)===parentKeyFor(field));const target=siblings[siblings.findIndex(f=>f.Id===field.Id)+delta];if(!target)return;const keys=new Set([field.Key,...descendants(treeNodes.value,field.Key)]),block=designFields.value.filter(f=>keys.has(f.Key)),rest=designFields.value.filter(f=>!keys.has(f.Key));let to=rest.findIndex(f=>f.Id===target.Id);if(delta>0){const targetKeys=new Set([target.Key,...descendants(treeNodes.value,target.Key)]);while(to<rest.length&&targetKeys.has(rest[to]!.Key))to++}rest.splice(to,0,...block);busy.value=true;try{form.value=await studio.reorder(form.value.Id,rest.map(f=>f.Id));previewKey.value++}catch(e){errorMessage.value=e instanceof Error?e.message:'جابه‌جایی انجام نشد.'}finally{busy.value=false}}
+ const publish=async()=>{if(!form.value||busy.value)return;if(settingsDirty.value&&!await saveSettings())return;if(!confirm('نسخه فعلی فرم منتشر شود؟ فرم منتشرشده بلافاصله مبنای نمایه‌زنی کاربران خواهد بود.'))return;busy.value=true;try{form.value=await studio.publish(form.value.Id);selectedFieldId.value=form.value.Fields.find(f=>f.Key===fieldForm.Key)?.Id??form.value.Fields[0]?.Id??'';syncFieldForm();previewKey.value+=1}catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'انتشار فرم انجام نشد.'}finally{busy.value=false}}
+-const duplicateField=async(f:AdminIndexField)=>{if(!form.value||busy.value||!canLeaveSettings())return;busy.value=true;try{const cfg=JSON.parse(JSON.stringify(f.Config));if(cfg.runtime)cfg.runtime={sourceMode:f.Options.length?'manual':'none',taxonomyCode:null,parentTaxonomyCode:null};form.value=await studio.addField(form.value.Id,{Key:uniqueKey(f.InputKind),Label:f.Label+' (کپی)',InputKind:f.InputKind,ValueKind:f.ValueKind,HelpText:f.HelpText??'',Placeholder:f.Placeholder??'',Required:f.Required,SearchEnabled:f.SearchEnabled,IndexEnabled:f.IndexEnabled,Width:f.Width,Config:cfg,Validation:f.Validation,Options:f.Options});selectedFieldId.value=form.value.Fields.at(-1)?.Id??'';sideTab.value='settings';syncFieldForm();previewKey.value+=1}catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'تکثیر انجام نشد.'}finally{busy.value=false}}
++const duplicateField=async(f:AdminIndexField)=>{if(!form.value||busy.value||!canLeaveSettings())return;busy.value=true;try{const copyKey=uniqueKey(f.InputKind);const cfg=JSON.parse(JSON.stringify(f.Config));if(cfg.runtime)cfg.runtime={...cfg.runtime,taxonomyCode:null,parentTaxonomyCode:null};form.value=await studio.addField(form.value.Id,{Key:copyKey,Label:f.Label+' (کپی)',InputKind:f.InputKind,ValueKind:f.ValueKind,HelpText:f.HelpText??'',Placeholder:f.Placeholder??'',Required:f.Required,SearchEnabled:f.SearchEnabled,IndexEnabled:f.IndexEnabled,Width:f.Width,Config:cfg,Validation:f.Validation,Options:f.Options});selectedFieldId.value=form.value.Fields.find(x=>x.Key===copyKey)?.Id??'';sideTab.value='settings';syncFieldForm();previewKey.value+=1}catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'تکثیر انجام نشد.'}finally{busy.value=false}}
+ const applyBulkOptions=()=>{const rows=optionBulk.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map((line,i)=>{const [label,value]=line.split('|');return {Label:label!.trim(),Value:value?.trim()||`option_${i+1}`}});if(new Set(rows.map(x=>x.Value)).size!==rows.length){errorMessage.value='مقدار گزینه‌ها باید یکتا باشد.';return}fieldForm.Options=rows;optionBulk.value=''}
++const addChild=async(f:AdminIndexField)=>{if(fieldDepth(f)>=3)return;const item=studioData.value?.FieldCatalog.find(x=>x.Kind==='searchable_select');if(item)await addElement({...item,Title:'زیرشاخه '+f.Label},undefined,f.Key)}
++const reparentField=async(f:AdminIndexField,parentKey:string)=>{if(!canLeaveSettings())return;selectedFieldId.value=f.Id;syncFieldForm();fieldForm.ParentKey=parentKey;sideTab.value='settings';await saveSettings()}
++const indentField=async(f:AdminIndexField,i:number)=>{const previous=designFields.value[i-1];if(previous)await reparentField(f,previous.Key)}
++const outdentField=async(f:AdminIndexField)=>{const parent=parentFieldFor(f);await reparentField(f,parent?parentKeyFor(parent):'')}
++const manageOwnItems=async()=>{if(settingsDirty.value&&!await saveSettings())return;await openTerms()}
+ const previewDraft=async()=>{if(settingsDirty.value&&!await saveSettings())return;mode.value='preview'}
+ 
+ const previewSchema=computed<IndexSchema|null>(()=>{
+  if(!form.value||!runtimeData.value)return null
+- const fields:IndexFieldDefinition[]=form.value.Fields.map(f=>{
++ const fields:IndexFieldDefinition[]=designFields.value.map(f=>{
+   const runtimeCfg=(f.Config?.runtime&&typeof f.Config.runtime==='object'&&!Array.isArray(f.Config.runtime)?f.Config.runtime:{}) as Record<string,unknown>
+   const taxonomyCode=String(runtimeCfg.taxonomyCode??'')||null
+   const taxonomy=taxonomyCode?runtimeData.value?.Taxonomies.find(x=>x.Code===taxonomyCode):null
+   const sourceMode=String(runtimeCfg.sourceMode??(f.Options.length?'manual':'none'))
+-  return {code:taxonomyCode??f.Key,key:f.Key,title:f.Label,type:f.InputKind,valueKind:f.ValueKind,multi:['multiselect','checkbox','tags'].includes(f.InputKind)||Boolean(taxonomy?.IsMulti),allowsPersonal:Boolean(taxonomy?.AllowsPersonal),sortOrder:f.DisplayOrder,required:f.Required,searchEnabled:f.SearchEnabled,indexEnabled:f.IndexEnabled,taxonomyCode,sourceMode,parentTaxonomyCode:taxonomy?.ParentTaxonomyCode??null,legacyTitle:taxonomy?.LegacyTitle??null,settings:{helpText:f.HelpText??'',placeholder:f.Placeholder??'',width:f.Width},config:f.Config,validation:f.Validation,options:f.Options.map(x=>({value:x.Value,label:x.Label,sortOrder:x.SortOrder}))}
++  return {code:taxonomyCode??f.Key,key:f.Key,title:f.Label,type:f.InputKind,valueKind:f.ValueKind,multi:['multiselect','checkbox','tags'].includes(f.InputKind)||Boolean(taxonomy?.IsMulti),allowsPersonal:Boolean(runtimeCfg.allowsPersonal),sortOrder:f.DisplayOrder,required:f.Required,searchEnabled:f.SearchEnabled,indexEnabled:f.IndexEnabled,taxonomyCode,sourceMode,parentKey:parentKeyFor(f)||null,parentTaxonomyCode:parentFieldFor(f)?fieldTaxonomyCode(parentFieldFor(f)!)||null:null,legacyTitle:taxonomy?.LegacyTitle??null,settings:{helpText:f.HelpText??'',placeholder:f.Placeholder??'',width:f.Width},config:f.Config,validation:f.Validation,options:f.Options.map(x=>({value:x.Value,label:x.Label,sortOrder:x.SortOrder}))}
+  })
+- return {contentType:selectedType.value,version:4,builder:'runtime-hybrid-v4-draft-preview',fields,relations:runtimeData.value.Relations,topicAnalysis:{fields:['IDX-001','IDX-003','IDX-002','IDX-004'],label:'موضوع ← کلید پردازش ← زیرموضوع ← برداشت'}}
++ return {contentType:selectedType.value,version:6,builder:'index-builder-v6-draft-preview',fields,relations:runtimeData.value.Relations,topicAnalysis:{fields:['IDX-001','IDX-003','IDX-002','IDX-004'],label:'نمایه‌ها و زیرشاخه‌های تعریف‌شده در نمایه‌ساز'}}
+ })
+ 
+ const termTaxonomy=computed<AdminRuntimeTaxonomy|null>(()=>selectedTaxonomy.value??null)
+-const openTerms=async()=>{if(!termTaxonomy.value)return;termOpen.value=true;termSearch.value='';termPage.value=1;termIncludeInactive.value=false;editingTermId.value=null;Object.assign(termForm,{Title:'',ParentHint:'',SortOrder:0,IsActive:true});parentSearch.value='';parentCandidates.value=[];await loadTerms()}
++const openTerms=async()=>{if(!termTaxonomy.value)return;termOpen.value=true;termSearch.value='';termPage.value=1;termIncludeInactive.value=false;editingTermId.value=null;Object.assign(termForm,{Title:'',ParentHint:'',ParentId:'',SortOrder:0,IsActive:true});parentSearch.value='';parentCandidates.value=[];await loadTerms()}
+ const loadTerms=async()=>{const t=termTaxonomy.value;if(!t)return;termBusy.value=true;try{termData.value=await runtime.terms(t.Code,termSearch.value,termPage.value,50,termIncludeInactive.value)}catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'آیتم‌های نمایه دریافت نشد.'}finally{termBusy.value=false}}
+ let searchTimer:ReturnType<typeof setTimeout>|null=null
+ const queueTermSearch=()=>{if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(()=>{termPage.value=1;void loadTerms()},250)}
+ let parentTimer:ReturnType<typeof setTimeout>|null=null
+-const queueParentSearch=()=>{const parentCode=termTaxonomy.value?.ParentTaxonomyCode;if(!parentCode)return;if(parentTimer)clearTimeout(parentTimer);parentTimer=setTimeout(async()=>{try{const r=await runtime.terms(parentCode,parentSearch.value,1,30,false);parentCandidates.value=r.Items}catch{parentCandidates.value=[]}},250)}
+-const chooseParent=(item:AdminRuntimeTerm)=>{termForm.ParentHint=item.Title;parentSearch.value=item.Title;parentCandidates.value=[]}
+-const editTerm=(item:AdminRuntimeTerm)=>{editingTermId.value=item.Id;Object.assign(termForm,{Title:item.Title,ParentHint:item.ParentHint??'',SortOrder:item.SortOrder,IsActive:item.IsActive});parentSearch.value=item.ParentHint??'';parentCandidates.value=[]}
+-const resetTerm=()=>{editingTermId.value=null;Object.assign(termForm,{Title:'',ParentHint:'',SortOrder:0,IsActive:true});parentSearch.value='';parentCandidates.value=[]}
+-const saveTerm=async()=>{const t=termTaxonomy.value;if(!t||!termForm.Title.trim())return;termBusy.value=true;try{if(editingTermId.value)await runtime.updateTerm(t.Code,editingTermId.value,{Title:termForm.Title.trim(),ParentHint:termForm.ParentHint,SortOrder:Number(termForm.SortOrder),IsActive:termForm.IsActive});else await runtime.createTerm(t.Code,{Title:termForm.Title.trim(),ParentHint:termForm.ParentHint||undefined,SortOrder:Number(termForm.SortOrder)});resetTerm();await loadTerms();runtimeData.value=await runtime.overview(selectedType.value);previewKey.value+=1}catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'ذخیره آیتم انجام نشد.'}finally{termBusy.value=false}}
+-const deactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;if(!t||!confirm(`آیتم «${item.Title}» غیرفعال شود؟`))return;termBusy.value=true;try{await runtime.deleteTerm(t.Code,item.Id);await loadTerms();runtimeData.value=await runtime.overview(selectedType.value);previewKey.value+=1}finally{termBusy.value=false}}
+-const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;if(!t)return;termBusy.value=true;try{await runtime.updateTerm(t.Code,item.Id,{IsActive:true});await loadTerms();runtimeData.value=await runtime.overview(selectedType.value);previewKey.value+=1}finally{termBusy.value=false}}
++const queueParentSearch=()=>{termForm.ParentId='';termForm.ParentHint='';const parentCode=termTaxonomy.value?.ParentTaxonomyCode;if(!parentCode)return;if(parentTimer)clearTimeout(parentTimer);parentTimer=setTimeout(async()=>{try{const r=await runtime.terms(parentCode,parentSearch.value,1,30,false);parentCandidates.value=r.Items}catch{parentCandidates.value=[]}},250)}
++const chooseParent=(item:AdminRuntimeTerm)=>{termForm.ParentHint=item.Title;termForm.ParentId=item.Id;parentSearch.value=item.Title;parentCandidates.value=[]}
++const editTerm=(item:AdminRuntimeTerm)=>{editingTermId.value=item.Id;Object.assign(termForm,{Title:item.Title,ParentHint:item.ParentHint??'',ParentId:item.ParentId??'',SortOrder:item.SortOrder,IsActive:item.IsActive});parentSearch.value=item.ParentHint??'';parentCandidates.value=[]}
++const resetTerm=()=>{editingTermId.value=null;Object.assign(termForm,{Title:'',ParentHint:'',ParentId:'',SortOrder:0,IsActive:true});parentSearch.value='';parentCandidates.value=[]}
++const saveTerm=async()=>{const t=termTaxonomy.value;if(!t||!termForm.Title.trim())return;termBusy.value=true;try{if(editingTermId.value)await runtime.updateTerm(t.Code,editingTermId.value,{Title:termForm.Title.trim(),ParentHint:termForm.ParentHint,ParentId:termForm.ParentId||undefined,SortOrder:Number(termForm.SortOrder),IsActive:termForm.IsActive});else await runtime.createTerm(t.Code,{Title:termForm.Title.trim(),ParentHint:termForm.ParentHint||undefined,ParentId:termForm.ParentId||undefined,SortOrder:Number(termForm.SortOrder)});resetTerm();await loadTerms();previewKey.value+=1}catch(e:unknown){errorMessage.value=e instanceof Error?e.message:'ذخیره آیتم انجام نشد.'}finally{termBusy.value=false}}
++const deactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;if(!t||!confirm(`آیتم «${item.Title}» غیرفعال شود؟`))return;termBusy.value=true;try{await runtime.deleteTerm(t.Code,item.Id);await loadTerms();previewKey.value+=1}finally{termBusy.value=false}}
++const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;if(!t)return;termBusy.value=true;try{await runtime.updateTerm(t.Code,item.Id,{IsActive:true});await loadTerms();previewKey.value+=1}finally{termBusy.value=false}}
+ </script>
+ 
+ <template>
+@@ -184,11 +202,11 @@ const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;i
+     <div class="head-actions"><NuxtLink to="/admin/content-types">انواع محتوا</NuxtLink><button :disabled="busy||!form" @click="publish">انتشار نسخه {{form?.DraftVersion??''}}</button></div>
+    </header>
+ 
+-   <div v-if="loading" class="builder-loading">در حال بارگذاری فرم و Runtime…</div>
++   <div v-if="loading" class="builder-loading">در حال بارگذاری نمایه‌ساز…</div>
+    <template v-else>
+     <div v-if="errorMessage" class="builder-error"><span>{{errorMessage}}</span><button @click="errorMessage=''">×</button></div>
+     <nav class="content-switcher">
+-     <button v-for="item in runtimeData?.ContentTypes" :key="item.Code" :class="{active:selectedType===item.Code}" @click="changeType(item.Code)"><b>{{item.Title}}</b><small>{{fa(item.FieldCount)}} نمایه متصل</small></button>
++     <button v-for="item in runtimeData?.ContentTypes" :key="item.Code" :class="{active:selectedType===item.Code}" @click="changeType(item.Code)"><b>{{item.Title}}</b><small>{{item.Code===selectedType?fa(form?.Fields.length??0):''}} نمایه تعریف‌شده</small></button>
+     </nav>
+ 
+     <div class="builder-shell" :class="{collapsed:sideCollapsed}">
+@@ -203,8 +221,8 @@ const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;i
+        <label class="tool-search"><span>⌕</span><input v-model="elementSearch" type="search" placeholder="جستجوی المنت…"></label>
+        <div class="field-palette">
+         <section v-for="group in paletteGroups" :key="group.name"><button class="group-toggle" @click="collapsedGroups[group.name]=!collapsedGroups[group.name]"><b>{{group.name}}</b><span>{{group.items.length}} {{collapsedGroups[group.name]?'＋':'−'}}</span></button><div v-show="!collapsedGroups[group.name]" class="palette-grid"><button v-for="item in group.items" :key="item.Kind" :disabled="busy" draggable="true" @dragstart="startPaletteDrag(item.Kind,$event)" @dragend="paletteDrag=''" @click="addElement(item)"><span>{{icons[item.Kind]||'◆'}}</span><b>{{item.Title}}</b><small>کلیک یا کشیدن به بوم</small></button></div></section>
+-        <section class="taxonomy-toolbox"><button class="group-toggle" @click="collapsedGroups.taxonomies=!collapsedGroups.taxonomies"><b>نمایه‌های ضحی</b><span>{{fa(taxonomyTools.length)}}</span></button><div v-show="!collapsedGroups.taxonomies" class="palette-grid"><button v-for="t in taxonomyTools" :key="t.Code" :disabled="busy||form?.Fields.some(f=>fieldTaxonomyCode(f)===t.Code)" draggable="true" @dragstart="startPaletteDrag('taxonomy:'+t.Code,$event)" @dragend="paletteDrag=''" @click="addTaxonomy(t)"><span>⌗</span><b>{{t.Title}}</b><small>{{t.Assigned?'در فرم':t.Code}}</small></button></div></section>
+-        <div v-if="!paletteGroups.length&&!taxonomyTools.length" class="settings-empty">ابزاری پیدا نشد.</div>
++
++        <div v-if="!paletteGroups.length" class="settings-empty">ابزاری پیدا نشد.</div>
+        </div>
+       </template>
+ 
+@@ -214,7 +232,8 @@ const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;i
+         <div class="tool-section-head"><div><h2>{{selectedField.Label}}</h2><small>{{fieldKindTitle(selectedField.InputKind)}}</small></div><button class="danger-text" @click="removeSelected">حذف</button></div>
+         <section class="settings-card"><h3>مشخصات فیلد</h3><label>کلید<input v-model="fieldForm.Key" dir="ltr"></label><label>عنوان<input v-model="fieldForm.Label"></label><label>نوع المنت<select v-model="fieldForm.InputKind"><option v-for="x in studioData?.FieldCatalog" :key="x.Kind" :value="x.Kind">{{x.Title}}</option></select></label><label>نوع مقدار<select v-model="fieldForm.ValueKind"><option v-for="x in ['string','number','boolean','date','object','array','reference']" :key="x" :value="x">{{x}}</option></select></label><label>راهنما<textarea v-model="fieldForm.HelpText"/></label><label>متن راهنمای ورودی<input v-model="fieldForm.Placeholder"></label><div class="two"><label>عرض<select v-model.number="fieldForm.Width"><option :value="25">۲۵٪</option><option :value="50">۵۰٪</option><option :value="75">۷۵٪</option><option :value="100">۱۰۰٪</option></select></label><label class="check"><input v-model="fieldForm.Required" type="checkbox"> الزامی</label></div><label class="check"><input v-model="fieldForm.SearchEnabled" type="checkbox"> قابل جستجو</label><label class="check"><input v-model="fieldForm.IndexEnabled" type="checkbox"> قابل نمایه‌سازی</label></section>
+ 
+-        <section class="settings-card"><h3>اتصال به نمایه‌های ضحی</h3><p>گزینه‌های این فیلد را از فهرست نمایه‌های ضحی دریافت کنید.</p><label>نمایه متصل<select v-model="fieldForm.TaxonomyCode"><option value="">بدون اتصال معنایی</option><option v-for="t in runtimeData?.Taxonomies" :key="t.Code" :value="t.Code">{{t.Code}} — {{t.Title}}</option></select></label><template v-if="sourceCapable"><label>منبع گزینه‌ها<select v-model="fieldForm.SourceMode"><option value="none">بدون منبع</option><option value="manual">گزینه‌های دستی</option><option value="runtime_taxonomy" :disabled="!fieldForm.TaxonomyCode||['image_choice','price_option'].includes(fieldForm.InputKind)">آیتم‌های نمایه انتخاب‌شده</option></select></label></template><button v-if="fieldForm.TaxonomyCode" class="manage-items" @click="openTerms"><span>☷</span><div><b>مدیریت آیتم‌های فهرست</b><small>{{taxonomyTitle(fieldForm.TaxonomyCode)}}؛ جستجو، افزودن، ویرایش و غیرفعال‌سازی</small></div></button></section>
++        <section class="settings-card hierarchy-settings"><h3>جایگاه درختی نمایه</h3><p>این نمایه در همین نمایه‌ساز تعریف می‌شود؛ فرم‌ها و بخش‌های سایت نسخه منتشرشده را می‌خوانند.</p><label>نمایه والد<select v-model="fieldForm.ParentKey" aria-label="نمایه والد"><option value="">نمایه اصلی (بدون والد)</option><option v-for="p in parentCandidatesForField" :key="p.Key" :value="p.Key">{{'— '.repeat(fieldDepth(p))}}{{p.Label}}</option></select></label><p v-if="fieldForm.ParentKey">ذیل «{{form?.Fields.find(f=>f.Key===fieldForm.ParentKey)?.Label}}» · سطح زیرشاخه {{(form?.Fields.find(f=>f.Key===fieldForm.ParentKey)?fieldDepth(form!.Fields.find(f=>f.Key===fieldForm.ParentKey)!):0)+1}} از ۳</p><p v-else>نمایه اصلی · تا سه سطح زیرشاخه</p><small>{{selectedField?pathFor(selectedField):''}}</small><button :disabled="busy||fieldDepth(selectedField)>=3" @click="addChild(selectedField)">+ افزودن زیرشاخه</button></section>
++        <section v-if="sourceCapable" class="settings-card"><h3>آیتم‌های همین نمایه</h3><p>فهرست آیتم‌ها متعلق به این نمایه است و در بخش‌های سایت استفاده می‌شود.</p><label>شیوه تعریف گزینه‌ها<select v-model="fieldForm.SourceMode"><option value="manual">گزینه‌های دستی همین فرم</option><option value="runtime_taxonomy" :disabled="['image_choice','price_option'].includes(fieldForm.InputKind)">فهرست قابل جستجوی همین نمایه</option></select></label><label v-if="fieldForm.SourceMode==='runtime_taxonomy'" class="check"><input v-model="fieldForm.AllowsPersonal" type="checkbox"> کاربران بتوانند آیتم شخصی اضافه کنند</label><button v-if="fieldForm.SourceMode==='runtime_taxonomy'" class="manage-items" @click="manageOwnItems"><span>☷</span><div><b>مدیریت آیتم‌های این نمایه</b><small>جستجو، افزودن، ویرایش و غیرفعال‌سازی</small></div></button></section>
+ 
+         <section v-if="manualOptionsEnabled" class="settings-card"><div class="setting-title"><h3>گزینه‌های دستی</h3><button @click="addOption">+ گزینه</button></div><div v-for="(o,i) in fieldForm.Options" :key="i" class="option-row"><input v-model="o.Label" placeholder="عنوان"><input v-model="o.Value" dir="ltr" placeholder="value"><button @click="removeOption(i)">×</button></div><p v-if="!fieldForm.Options.length">هنوز گزینه‌ای افزوده نشده است.</p></section>
+ 
+@@ -239,8 +258,8 @@ const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;i
+       <header class="canvas-head"><div><span>{{selectedTypeInfo?.Title}}</span><h2>{{form?.Title}}</h2><p>نسخه منتشرشده {{form?.ActiveVersion}} · پیش‌نویس {{form?.DraftVersion}} · {{form?.Fields.length??0}} المنت</p></div><div class="mode-toggle"><button :class="{active:mode==='design'}" @click="mode='design'">طراحی</button><button :class="{active:mode==='preview'}" @click="previewDraft">نمایش واقعی کاربر</button></div></header>
+ 
+       <div v-if="mode==='design'" class="canvas-fields" @dragover.prevent @drop.prevent.stop="drop(form?.Fields.length??0)">
+-       <article v-for="(f,i) in form?.Fields" :key="f.Id" :class="{selected:selectedFieldId===f.Id}" draggable="true" :style="{gridColumn:`span ${Math.round(f.Width/100*12)}`}" @dragstart.stop="dragIndex=i;paletteDrag=''" @dragend="dragIndex=null" @dragover.prevent @drop.prevent.stop="drop(i)" @click="selectField(f.Id)">
+-        <span class="drag">⋮⋮</span><div class="field-icon">{{f.InputKind==='text'?'T':f.InputKind==='textarea'?'¶':f.InputKind.includes('select')?'⌄':f.InputKind==='checkbox'?'☑':f.InputKind==='radio'?'◉':f.InputKind==='section'?'§':'◆'}}</div><div class="field-main"><div><b>{{f.Label}}</b><em>{{fieldKindTitle(f.InputKind)}}</em><em v-if="fieldTaxonomyCode(f)" class="runtime-badge">{{taxonomyTitle(fieldTaxonomyCode(f))}}</em></div><small>{{f.Key}} · عرض {{f.Width}}٪ <template v-if="f.Required">· الزامی</template></small></div><div class="move"><button :disabled="busy" title="تکثیر فیلد" @click.stop="duplicateField(f)">⧉</button><button :disabled="busy||i===0" title="بالا" @click.stop="move(i,-1)">↑</button><button :disabled="busy||i===(form?.Fields.length??0)-1" title="پایین" @click.stop="move(i,1)">↓</button></div>
++       <article v-for="(f,i) in designFields" :key="f.Id" :class="{selected:selectedFieldId===f.Id}" draggable="true" :style="{gridColumn:'1 / -1',marginInlineStart:`${fieldDepth(f)*30}px`}" :data-depth="fieldDepth(f)" :data-field-key="f.Key" @dragstart.stop="dragIndex=i;paletteDrag=''" @dragend="dragIndex=null" @dragover.prevent @drop.prevent.stop="drop(i)" @click="selectField(f.Id)">
++        <span class="drag">⋮⋮</span><div class="field-icon">{{f.InputKind==='text'?'T':f.InputKind==='textarea'?'¶':f.InputKind.includes('select')?'⌄':f.InputKind==='checkbox'?'☑':f.InputKind==='radio'?'◉':f.InputKind==='section'?'§':'◆'}}</div><div class="field-main"><div><b>{{f.Label}}</b><em>{{fieldKindTitle(f.InputKind)}}</em><em v-if="parentFieldFor(f)" class="runtime-badge">ذیل {{parentFieldFor(f)?.Label}} · سطح {{fieldDepth(f)}}</em><em v-else class="runtime-badge">نمایه اصلی</em></div><small class="tree-path">{{pathFor(f)}}</small><small>{{f.Key}} · عرض {{f.Width}}٪ <template v-if="f.Required">· الزامی</template></small></div><div class="move"><button :disabled="busy||fieldDepth(f)>=3" title="افزودن زیرشاخه" @click.stop="addChild(f)">＋</button><button :disabled="busy||i===0||fieldDepth(f)>=3" title="زیرشاخه نمایه قبلی" @click.stop="indentField(f,i)">↳</button><button :disabled="busy||!parentFieldFor(f)" title="یک سطح بالاتر" @click.stop="outdentField(f)">↰</button><button :disabled="busy" title="تکثیر فیلد" @click.stop="duplicateField(f)">⧉</button><button :disabled="busy||i===0" title="بالا" @click.stop="move(i,-1)">↑</button><button :disabled="busy||i===(form?.Fields.length??0)-1" title="پایین" @click.stop="move(i,1)">↓</button></div>
+        </article>
+        <div v-if="!form?.Fields.length" class="canvas-empty"><b>فرم خالی است</b><span>از Toolbox سمت چپ یک المنت اضافه کنید.</span></div>
+       </div>
+@@ -253,7 +272,7 @@ const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;i
+  </main>
+ 
+  <div v-if="termOpen&&termTaxonomy" class="term-backdrop" @click.self="termOpen=false">
+-  <section class="term-manager"><header><div><span>{{termTaxonomy.Code}}</span><h2>آیتم‌های «{{termTaxonomy.Title}}»</h2><p>{{fa(termData?.Total??0)}} آیتم؛ داده مستقیم Runtime</p></div><button @click="termOpen=false">×</button></header><div class="term-layout"><aside class="term-editor"><h3>{{editingTermId?'ویرایش آیتم':'افزودن آیتم'}}</h3><label>عنوان<input v-model="termForm.Title" placeholder="عنوان آیتم"></label><div v-if="termTaxonomy.ParentTaxonomyCode" class="parent-picker"><label>والد<input v-model="parentSearch" placeholder="جستجوی والد…" @input="queueParentSearch"></label><div v-if="parentCandidates.length" class="parent-drop"><button v-for="p in parentCandidates" :key="p.Id" @click="chooseParent(p)">{{p.Title}}</button></div><small>از {{taxonomyTitle(termTaxonomy.ParentTaxonomyCode)}} انتخاب می‌شود.</small></div><label>ترتیب<input v-model.number="termForm.SortOrder" type="number"></label><label v-if="editingTermId" class="check"><input v-model="termForm.IsActive" type="checkbox"> فعال</label><div class="term-editor-actions"><button v-if="editingTermId" @click="resetTerm">انصراف</button><button class="primary" :disabled="termBusy||!termForm.Title.trim()" @click="saveTerm">{{editingTermId?'ذخیره':'افزودن آیتم'}}</button></div></aside><main class="term-list-area"><div class="term-search-row"><label><span>⌕</span><input v-model="termSearch" type="search" placeholder="جستجو بین آیتم‌ها…" @input="queueTermSearch"></label><label class="check"><input v-model="termIncludeInactive" type="checkbox" @change="termPage=1;loadTerms()"> غیرفعال‌ها</label></div><div v-if="termBusy" class="term-loading">در حال دریافت…</div><div v-else class="term-items"><article v-for="item in termData?.Items" :key="item.Id" :class="{off:!item.IsActive}"><div><b>{{item.Title}}</b><small v-if="item.ParentHint">والد: {{item.ParentHint}}</small></div><div><button @click="editTerm(item)">ویرایش</button><button v-if="item.IsActive" @click="deactivateTerm(item)">غیرفعال</button><button v-else @click="reactivateTerm(item)">فعال‌سازی</button></div></article><div v-if="!termData?.Items.length" class="term-loading">موردی پیدا نشد.</div></div><div class="pager"><button :disabled="termPage<=1" @click="termPage--;loadTerms()">قبلی</button><span>صفحه {{fa(termPage)}}</span><button :disabled="(termData?.Items.length??0)<(termData?.PageSize??50)" @click="termPage++;loadTerms()">بعدی</button></div></main></div></section>
++  <section class="term-manager"><header><div><span>{{termTaxonomy.Code}}</span><h2>آیتم‌های «{{termTaxonomy.Title}}»</h2><p>{{fa(termData?.Total??0)}} آیتم؛ فهرست تعریف‌شده در نمایه‌ساز</p></div><button @click="termOpen=false">×</button></header><div class="term-layout"><aside class="term-editor"><h3>{{editingTermId?'ویرایش آیتم':'افزودن آیتم'}}</h3><label>عنوان<input v-model="termForm.Title" placeholder="عنوان آیتم"></label><div v-if="termTaxonomy.ParentTaxonomyCode" class="parent-picker"><label>والد<input v-model="parentSearch" placeholder="جستجوی والد…" @input="queueParentSearch"></label><div v-if="parentCandidates.length" class="parent-drop"><button v-for="p in parentCandidates" :key="p.Id" @click="chooseParent(p)">{{p.Title}}</button></div><small>از {{taxonomyTitle(termTaxonomy.ParentTaxonomyCode)}} انتخاب می‌شود.</small></div><label>ترتیب<input v-model.number="termForm.SortOrder" type="number"></label><label v-if="editingTermId" class="check"><input v-model="termForm.IsActive" type="checkbox"> فعال</label><div class="term-editor-actions"><button v-if="editingTermId" @click="resetTerm">انصراف</button><button class="primary" :disabled="termBusy||!termForm.Title.trim()" @click="saveTerm">{{editingTermId?'ذخیره':'افزودن آیتم'}}</button></div></aside><main class="term-list-area"><div class="term-search-row"><label><span>⌕</span><input v-model="termSearch" type="search" placeholder="جستجو بین آیتم‌ها…" @input="queueTermSearch"></label><label class="check"><input v-model="termIncludeInactive" type="checkbox" @change="termPage=1;loadTerms()"> غیرفعال‌ها</label></div><div v-if="termBusy" class="term-loading">در حال دریافت…</div><div v-else class="term-items"><article v-for="item in termData?.Items" :key="item.Id" :class="{off:!item.IsActive}"><div><b>{{item.Title}}</b><small v-if="item.ParentHint">والد: {{item.ParentHint}}</small></div><div><button @click="editTerm(item)">ویرایش</button><button v-if="item.IsActive" @click="deactivateTerm(item)">غیرفعال</button><button v-else @click="reactivateTerm(item)">فعال‌سازی</button></div></article><div v-if="!termData?.Items.length" class="term-loading">موردی پیدا نشد.</div></div><div class="pager"><button :disabled="termPage<=1" @click="termPage--;loadTerms()">قبلی</button><span>صفحه {{fa(termPage)}}</span><button :disabled="(termData?.Items.length??0)<(termData?.PageSize??50)" @click="termPage++;loadTerms()">بعدی</button></div></main></div></section>
+  </div>
+ </div>
+ </template>
+@@ -263,4 +282,5 @@ const reactivateTerm=async(item:AdminRuntimeTerm)=>{const t=termTaxonomy.value;i
+ 
+ .group-toggle{border:0;background:#f3f6fa;color:#354b67;width:100%;display:flex;justify-content:space-between;padding:10px;border-radius:8px;margin:8px 0}.palette-grid button{cursor:grab}.palette-grid button:disabled{opacity:.45;cursor:default}.palette-grid button:hover{border-color:#73a4d7;background:#f4f9ff}.taxonomy-toolbox{margin-top:12px}.canvas-fields{grid-template-columns:repeat(12,minmax(0,1fr));min-height:300px;align-content:start}.canvas-fields article{min-width:0;grid-template-columns:16px 30px minmax(0,1fr);align-items:start}.canvas-fields article .move{grid-column:2/-1;justify-content:flex-end}.field-icon{width:30px;height:30px}.canvas-empty{grid-column:1/-1}.settings-card .secondary,.formula-fields button{border:1px solid #dce3ec;border-radius:7px;padding:7px;background:#f6f9fc;color:#31567e}.formula-fields{display:flex;gap:5px;flex-wrap:wrap}.condition-row{display:grid;grid-template-columns:1fr 1fr;gap:5px;border-top:1px solid #e8edf3;padding-top:8px}.condition-row button{border:0;background:#fff0f0;border-radius:7px}.device-switch{display:flex;justify-content:center;gap:6px;margin-bottom:12px}.device-switch button{border:1px solid #dce3ec;border-radius:8px;background:#fff;padding:7px 12px}.device-switch .active{background:#102b4e;color:#fff}.real-preview.mobile :deep(.index-panel){max-width:390px;margin:auto;border:6px solid #243a56;border-radius:22px;padding:14px}.real-preview.tablet :deep(.index-panel){max-width:760px;margin:auto}.unsaved{display:block;color:#a36c18;margin:5px 0}.tool-footer button:disabled{opacity:.65}.builder-page button:disabled{cursor:default}.field-palette{scrollbar-width:thin}.canvas-fields>article:hover{background:#fafcff}.settings-scroll input,.settings-scroll select{max-width:100%}@media(max-width:800px){.canvas-fields article{grid-column:1/-1!important}.real-preview.mobile :deep(.index-panel){padding:8px}.preview-banner{flex-wrap:wrap;font-size:11px}}
+ @media(min-width:801px) and (max-width:1100px){.builder-shell.collapsed{grid-template-columns:76px minmax(0,1fr)}}@media(max-width:800px){.builder-tools{order:1;min-height:0;max-height:65vh}.builder-canvas{order:2}}
++.canvas-fields article[data-depth]:not([data-depth="0"]){border-inline-start:3px solid #a8c8e6;position:relative}.tree-path{color:#39658c!important;display:block}.hierarchy-settings{background:#f4f8fd}.hierarchy-settings small{color:#39658c;line-height:1.8}.move{flex-wrap:wrap}.move button{min-width:28px}
+ </style>
+diff --git a/apps/web/utils/indexHierarchy.ts b/apps/web/utils/indexHierarchy.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5eb9034b168e957ea377153129531ac2ef1cca7b
+--- /dev/null
++++ b/apps/web/utils/indexHierarchy.ts
+@@ -0,0 +1,17 @@
++export interface HierarchyNode {key:string;parentKey:string|null}
++export const MAX_INDEX_DEPTH=3
++export function hierarchyDepth(nodes:HierarchyNode[],key:string):number {
++ const map=new Map(nodes.map(n=>[n.key,n]));const seen=new Set<string>();let depth=0;let node=map.get(key)
++ while(node?.parentKey){if(seen.has(node.key))throw new Error('رابطه دوری در نمایه‌ها مجاز نیست.');seen.add(node.key);node=map.get(node.parentKey);if(!node)throw new Error('نمایه والد در همین فرم وجود ندارد.');depth++;if(depth>MAX_INDEX_DEPTH)throw new Error('حداکثر سه سطح زیرشاخه زیر نمایه اصلی مجاز است.')}
++ return depth
++}
++export function validateHierarchy(nodes:HierarchyNode[]):void {
++ if(new Set(nodes.map(n=>n.key)).size!==nodes.length)throw new Error('کلید نمایه‌ها باید یکتا باشد.')
++ for(const n of nodes)hierarchyDepth(nodes,n.key)
++}
++export function hierarchyOrder<T extends HierarchyNode>(nodes:T[]):T[]{
++ validateHierarchy(nodes);const out:T[]=[];const visit=(parent:string|null)=>{for(const n of nodes)if((n.parentKey||null)===parent){out.push(n);visit(n.key)}};visit(null);return out
++}
++export function descendants(nodes:HierarchyNode[],key:string):string[]{
++ const found:string[]=[];const visit=(k:string)=>{for(const n of nodes)if(n.parentKey===k&&!found.includes(n.key)){found.push(n.key);visit(n.key)}};visit(key);return found
++}
+diff --git a/database-v2/migrations/postgres/200_index_builder_authority.sql b/database-v2/migrations/postgres/200_index_builder_authority.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc32b3ca75682240bc9aae761625b8569e2e1101
+--- /dev/null
++++ b/database-v2/migrations/postgres/200_index_builder_authority.sql
+@@ -0,0 +1,74 @@
++\set ON_ERROR_STOP on
++BEGIN;
++SET LOCAL search_path TO zoha,public;
++
++-- Preserve both the published version and any independent draft edits.
++DO $$
++DECLARE f record; oldv record; new_id uuid; next_version integer; new_active integer; new_draft integer;
++BEGIN
++ FOR f IN SELECT * FROM index_forms WHERE active AND NOT deleted LOOP
++  SELECT COALESCE(max(version),0)+1 INTO next_version FROM index_form_versions WHERE index_form_id=f.id;
++  new_active:=0;new_draft:=NULL;
++  FOR oldv IN SELECT v.*,chosen.kind FROM index_form_versions v CROSS JOIN LATERAL (VALUES('active',f.active_version),('draft',f.draft_version)) chosen(kind,version) WHERE v.index_form_id=f.id AND v.version=chosen.version AND v.active AND NOT v.deleted ORDER BY chosen.kind LOOP
++   INSERT INTO index_form_versions(index_form_id,version,schema_snapshot,validation_rules,immutable,published_at,created_by,updated_by,active,deleted)
++   VALUES(f.id,next_version,COALESCE(oldv.schema_snapshot,'{}')||'{"source":"index-builder","hierarchyDepth":3}'::jsonb,oldv.validation_rules,oldv.kind='active',CASE WHEN oldv.kind='active' THEN now() ELSE NULL END,oldv.created_by,oldv.updated_by,true,false) RETURNING id INTO new_id;
++   INSERT INTO index_form_fields(version_id,field_key,label,help_text,placeholder,input_kind,value_kind,required,search_enabled,index_enabled,display_order,width,config,validation,created_by,updated_by,active,deleted)
++   SELECT new_id,ff.field_key,ff.label,ff.help_text,ff.placeholder,ff.input_kind,ff.value_kind,ff.required,ff.search_enabled,ff.index_enabled,ff.display_order,ff.width,
++    ff.config||jsonb_build_object('authority','index-builder','hierarchy',jsonb_build_object('parentKey',COALESCE(ff.config->'hierarchy'->>'parentKey',parent.field_key))),ff.validation,ff.created_by,ff.updated_by,true,false
++   FROM index_form_fields ff
++   LEFT JOIN index_form_fields parent ON parent.version_id=ff.version_id AND parent.active AND NOT parent.deleted
++    AND parent.config->'runtime'->>'taxonomyCode'=CASE WHEN ff.config->'runtime'->>'taxonomyCode' IN ('IDX-002','IDX-003') THEN 'IDX-001' ELSE ff.config->'runtime'->>'parentTaxonomyCode' END
++   WHERE ff.version_id=oldv.id AND ff.active AND NOT ff.deleted;
++   INSERT INTO index_form_options(field_id,value_key,label,sort_order,is_active,created_by,updated_by,active,deleted)
++   SELECT nf.id,o.value_key,o.label,o.sort_order,o.is_active,o.created_by,o.updated_by,true,false FROM index_form_fields ofld JOIN index_form_options o ON o.field_id=ofld.id AND o.active AND NOT o.deleted JOIN index_form_fields nf ON nf.version_id=new_id AND nf.field_key=ofld.field_key WHERE ofld.version_id=oldv.id;
++   INSERT INTO index_form_rules(version_id,rule_key,rule_kind,condition,action,sort_order,created_by,updated_by,active,deleted)
++   SELECT new_id,rule_key,rule_kind,condition,action,sort_order,created_by,updated_by,true,false FROM index_form_rules WHERE version_id=oldv.id AND active AND NOT deleted;
++   IF oldv.kind='active' THEN new_active:=next_version; END IF;
++   IF oldv.kind='draft' THEN new_draft:=next_version; END IF;
++   next_version:=next_version+1;
++  END LOOP;
++  IF new_draft IS NOT NULL THEN UPDATE index_forms SET active_version=new_active,draft_version=new_draft,settings=COALESCE(settings,'{}')||'{"authority":"index-builder"}'::jsonb WHERE id=f.id; END IF;
++ END LOOP;
++END $$;
++
++CREATE OR REPLACE VIEW index_builder_published_fields AS
++SELECT ct.code AS content_type,f.id AS form_id,f.active_version,ff.id AS field_id,ff.field_key,ff.label,ff.input_kind,ff.value_kind,ff.required,ff.search_enabled,ff.index_enabled,ff.display_order,ff.width,ff.help_text,ff.placeholder,ff.config,ff.validation,
++ ff.config->'runtime'->>'taxonomyCode' AS taxonomy_code,
++ parent.field_key AS parent_key,parent.config->'runtime'->>'taxonomyCode' AS parent_taxonomy_code
++FROM content_types ct
++JOIN content_type_index_forms m ON m.content_type_id=ct.id AND m.is_primary AND m.active AND NOT m.deleted
++JOIN index_forms f ON f.id=m.index_form_id AND f.active AND NOT f.deleted AND f.is_active
++JOIN index_form_versions v ON v.index_form_id=f.id AND v.version=f.active_version AND v.active AND NOT v.deleted
++JOIN index_form_fields ff ON ff.version_id=v.id AND ff.active AND NOT ff.deleted
++LEFT JOIN index_form_fields parent ON parent.version_id=v.id AND parent.field_key=ff.config->'hierarchy'->>'parentKey' AND parent.active AND NOT parent.deleted
++WHERE ct.active AND NOT ct.deleted;
++
++-- Compatibility consumers receive a projection of the builder's published definition.
++-- These tables are storage/projections; they no longer define forms or relationships.
++CREATE OR REPLACE FUNCTION sync_index_builder_projection(wanted_form uuid) RETURNS void LANGUAGE plpgsql AS $$
++BEGIN
++ INSERT INTO zoha.index_runtime_taxonomies(code,title,field_type,is_multi,allows_personal,metadata,is_active)
++ SELECT DISTINCT ON(taxonomy_code) taxonomy_code,label,
++  CASE WHEN input_kind IN ('searchable_select','select','multiselect','radio','checkbox','tags') THEN 'taxonomy' WHEN input_kind='textarea' THEN 'textarea' ELSE 'text' END,
++  input_kind IN ('multiselect','checkbox','tags'),COALESCE((config->'runtime'->>'allowsPersonal')::boolean,false),
++  jsonb_build_object('authority','index-builder','parentTaxonomyCode',parent_taxonomy_code),true
++ FROM zoha.index_builder_published_fields WHERE form_id=wanted_form AND COALESCE(taxonomy_code,'')<>'' ORDER BY taxonomy_code,content_type
++ ON CONFLICT(code) DO UPDATE SET title=EXCLUDED.title,field_type=EXCLUDED.field_type,is_multi=EXCLUDED.is_multi,allows_personal=EXCLUDED.allows_personal,metadata=zoha.index_runtime_taxonomies.metadata||EXCLUDED.metadata,is_active=true,updated_at=now();
++ DELETE FROM zoha.index_runtime_post_type_fields p USING zoha.content_type_index_forms m,zoha.content_types ct WHERE m.index_form_id=wanted_form AND m.is_primary AND m.active AND NOT m.deleted AND ct.id=m.content_type_id AND p.post_type_code=ct.code;
++ INSERT INTO zoha.index_runtime_post_type_fields(post_type_code,taxonomy_code,sort_order,is_required,settings)
++ SELECT content_type,taxonomy_code,display_order,required,config||jsonb_build_object('label',label,'helpText',help_text,'placeholder',placeholder,'width',width,'parentKey',parent_key,'parentTaxonomyCode',parent_taxonomy_code,'authority','index-builder')
++ FROM zoha.index_builder_published_fields WHERE form_id=wanted_form AND COALESCE(taxonomy_code,'')<>'';
++END $$;
++SELECT sync_index_builder_projection(id) FROM index_forms WHERE active AND NOT deleted AND active_version>0;
++
++-- Preserve existing vocabulary IDs and attach unambiguous historical parents.
++UPDATE index_runtime_terms child SET parent_id=parent.id FROM index_runtime_taxonomies definition,index_runtime_terms parent
++WHERE child.taxonomy_code=definition.code AND child.parent_id IS NULL AND child.parent_hint IS NOT NULL
++ AND parent.taxonomy_code=definition.metadata->>'parentTaxonomyCode' AND parent.normalized_title=child.parent_hint AND parent.is_active
++ AND (SELECT count(*) FROM index_runtime_terms candidate WHERE candidate.taxonomy_code=parent.taxonomy_code AND candidate.normalized_title=parent.normalized_title AND candidate.is_active)=1;
++
++ALTER TABLE index_runtime_terms DROP CONSTRAINT IF EXISTS index_runtime_terms_taxonomy_code_normalized_title_parent_h_key;
++CREATE UNIQUE INDEX index_builder_term_parent_unique ON index_runtime_terms(taxonomy_code,normalized_title,parent_id,parent_hint);
++
++INSERT INTO schema_migrations(version,checksum) VALUES('200_index_builder_authority','index-builder-authority-v060') ON CONFLICT(version) DO NOTHING;
++COMMIT;
+diff --git a/tests/admin-content-studio.test.cjs b/tests/admin-content-studio.test.cjs
+index 978d8b2f72e833fc68142f8464b19f6848dc6312..87e55e735cecef7abebb3cdbc0a132969a807c24 100644
+--- a/tests/admin-content-studio.test.cjs
++++ b/tests/admin-content-studio.test.cjs
+@@ -44,7 +44,7 @@ test('admin has dedicated content type page with three core content families and
+ });
+ 
+ test('hybrid index builder uses versioned form studio plus real runtime vocabulary',()=>{
+- for(const phrase of ['useAdminContentStudio','useAdminRuntimeIndex','field-palette','sideCollapsed','المنت‌ها','تنظیمات','SourceMode','TaxonomyCode','گزینه‌های دستی','منطق شرطی','مدیریت آیتم‌های فهرست','نمایش واقعی کاربر','schema-override'])assert.match(builderPage,new RegExp(phrase));
++ for(const phrase of ['useAdminContentStudio','useAdminRuntimeIndex','field-palette','sideCollapsed','المنت‌ها','تنظیمات','SourceMode','TaxonomyCode','گزینه‌های دستی','منطق شرطی','مدیریت آیتم‌های این نمایه','نمایش واقعی کاربر','schema-override'])assert.match(builderPage,new RegExp(phrase));
+  assert.match(builderPage,/draggable="true"/);
+  assert.match(builderPage,/studio\.reorder/);
+  assert.match(builderPage,/studio\.addField/);
+diff --git a/tests/index-authoring-integration.test.cjs b/tests/index-authoring-integration.test.cjs
+index 301329e7ca904d16d3a382cf11ac94d84942a229..10bacfc5751bb197353041fa06945d8155643ebd 100644
+--- a/tests/index-authoring-integration.test.cjs
++++ b/tests/index-authoring-integration.test.cjs
+@@ -49,18 +49,17 @@ test('frontend runtime uses the real Zoha auth headers and unwraps API envelope'
+ });
+ 
+ test('dependent taxonomies filter by parent and personal child creation keeps ownership parent',()=>{
+- assert.match(indexService,/parentMap:Record<string,string>/);
+- assert.match(indexService,/'IDX-006':'IDX-005'/);
+- assert.match(indexService,/'IDX-008':'IDX-007'/);
+- assert.match(indexService,/'IDX-010':'IDX-009'/);
++ assert.match(indexService,/parent_taxonomy_code/);
++ assert.doesNotMatch(indexService,/const parentMap/);
+  assert.match(panel,/f\.parentTaxonomyCode/);
+  assert.match(panel,/:parent="parentFor\(f\)"/);
+  assert.match(panel,/:personal-parent-option="personalParentFor\(f\)"/);
+  assert.match(personal,/parentSystemTermId/);
+  assert.match(personal,/parentUserTermId/);
+- assert.match(indexService,/'IDX-002':'IDX-001'/);
+- assert.match(panel,/:parent="selectionTitle\(a\.topic\)"/);
+- assert.match(panel,/:personal-parent-option="selection\(a\.topic\)"/);
++ assert.match(indexService,/parent_system_term_id/);
++ assert.match(indexService,/parent_user_term_id/);
++ assert.match(panel,/:parent="parentFor\(f,a\)"/);
++ assert.match(panel,/:personal-parent-option="personalParentFor\(f,a\)"/);
+  const dynamic=read('apps/web/components/indexing/IndexDynamicField.vue');
+  assert.match(dynamic,/:parent="parent"/);
+  assert.match(dynamic,/:personal-parent-option="personalParentOption"/);
+diff --git a/tests/index-hierarchy.test.cjs b/tests/index-hierarchy.test.cjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3b059cc664dadf6ad9d88b87a88adf15f4018915
+--- /dev/null
++++ b/tests/index-hierarchy.test.cjs
+@@ -0,0 +1,17 @@
++const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
++const ts=require(require.resolve('typescript',{paths:[path.resolve('apps/api')]}));
++function load(file){const exports={};const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,experimentalDecorators:true}}).outputText;vm.runInNewContext(code,{exports,Buffer,process,Error,require:id=>{if(id==='@nestjs/common')return {Injectable:()=>x=>x,HttpStatus:{BAD_REQUEST:400,CONFLICT:409,FORBIDDEN:403,UNAUTHORIZED:401}};if(id.endsWith('domain.exception'))return {DomainException:class extends Error{constructor(message,status){super(message);this.status=status}}};if(id.endsWith('index-hierarchy'))return load('apps/api/src/admin-content-studio/index-hierarchy.ts');if(id.endsWith('index-runtime.service'))return load('apps/api/src/index-runtime/index-runtime.service.ts');if(id.startsWith('node:'))return require(id);return {}}});return exports}
++const h=load('apps/api/src/admin-content-studio/index-hierarchy.ts');
++const tree=[{key:'topic',parentKey:null},{key:'processing',parentKey:'topic'},{key:'subtopic',parentKey:'topic'},{key:'second',parentKey:'subtopic'},{key:'third',parentKey:'second'},{key:'other',parentKey:null}];
++test('root plus three sublevels are allowed',()=>{h.validateHierarchy(tree);assert.equal(h.hierarchyDepth(tree,'topic'),0);assert.equal(h.hierarchyDepth(tree,'third'),3)});
++test('fourth sublevel is rejected',()=>assert.throws(()=>h.validateHierarchy([...tree,{key:'fourth',parentKey:'third'}]),/سه سطح/));
++test('self parenting, ancestor cycles, missing parents and duplicate keys are rejected',()=>{for(const rows of [[{key:'a',parentKey:'a'}],[{key:'a',parentKey:'b'},{key:'b',parentKey:'a'}],[{key:'a',parentKey:'missing'}],[{key:'a',parentKey:null},{key:'a',parentKey:null}]])assert.throws(()=>h.validateHierarchy(rows))});
++test('reorder keeps a subtree together and preserves sibling order',()=>{const input=[tree[5],tree[2],tree[0],tree[4],tree[1],tree[3]];assert.equal(h.hierarchyOrder(input).map(n=>n.key).join(','),'other,topic,subtopic,second,third,processing');assert.equal(h.descendants(tree,'topic').join(','),'processing,subtopic,second,third')});
++test('web and API enforce the same hierarchy contract',()=>assert.equal(fs.readFileSync('apps/web/utils/indexHierarchy.ts','utf8'),fs.readFileSync('apps/api/src/admin-content-studio/index-hierarchy.ts','utf8')));
++const {AdminContentStudioService}=load('apps/api/src/admin-content-studio/admin-content-studio.service.ts');
++test('API rejects invalid hierarchy before any reorder writes',async()=>{let writes=0;const client={query:async(sql)=>{if(sql.startsWith('SELECT'))return {rows:[{id:'a',field_key:'a',config:{hierarchy:{parentKey:'b'}}},{id:'b',field_key:'b',config:{hierarchy:{parentKey:'a'}}}]};writes++;return {rows:[]}}};await assert.rejects(()=>new AdminContentStudioService({}).normalizeTree(client,'v'),/دوری/);assert.equal(writes,0)});
++test('builder allocates its own identity and ignores supplied external identity',async()=>{const service=new AdminContentStudioService({}),client={query:async()=>({rows:[]})};const body={Key:'example',Label:'مثال',InputKind:'searchable_select',Config:{runtime:{taxonomyCode:'IDX-001',sourceMode:'runtime_taxonomy'},hierarchy:{parentKey:null}}};const cfg=await service.fieldConfig(client,'v',body);assert.match(cfg.runtime.taxonomyCode,/^IDX-B/);assert.notEqual(cfg.runtime.taxonomyCode,'IDX-001');const saved=await service.fieldConfig(client,'v',body,{field_key:'example',config:cfg});assert.equal(saved.runtime.taxonomyCode,cfg.runtime.taxonomyCode)});
++const {IndexRuntimeService,publishedIndexSchema}=load('apps/api/src/index-runtime/index-runtime.service.ts');
++test('empty published builder never falls back to removed legacy fields',async()=>{const queries=[];const schema=await publishedIndexSchema({query:async(sql)=>{queries.push(sql);return {rows:[]}}},'mold');assert.equal(schema.fields.length,0);assert.equal(schema.builder,'index-builder-v6');assert.ok(!queries.some(q=>q.includes('FROM zoha.index_runtime_post_type_fields')))});
++test('option requests filter personal items by selected parent identity',async()=>{const requests=[];const service=new IndexRuntimeService({query:async(sql,args)=>{requests.push({sql,args});return {rows:sql.includes('index_builder_published_fields')?[{code:'child',title:'child',parent_taxonomy_code:'parent'}]:[]}}});assert.equal((await service.options({apiUserId:7},'child')).items.length,0);requests.length=0;await service.options({apiUserId:7},'child','','والد','14','personal');assert.equal(requests.at(-1).args.join(','),'7,child,,14,personal');assert.match(requests.at(-1).sql,/parent_user_term_id::text/)});
++test('independent legacy definition writes are blocked',async()=>{const {AdminRuntimeIndexService}=load('apps/api/src/admin-content-studio/admin-runtime-index.service.ts');const service=new AdminRuntimeIndexService({query:()=>{throw Error('must not mutate')}});for(const method of ['assignField','updateField','removeField','reorder','updateTaxonomy'])await assert.rejects(()=>service[method]({roles:['system_admin']},'mold','code',{}),/نمایه‌ساز/)});
+diff --git a/tests/real-index-builder.test.cjs b/tests/real-index-builder.test.cjs
+index 0386d652898c5f648c149a27c1b61b5dc11700e6..3ecd9db2f21bf8214dee7646b56d05d8828d2c42 100644
+--- a/tests/real-index-builder.test.cjs
++++ b/tests/real-index-builder.test.cjs
+@@ -60,15 +60,16 @@ test('builder draft preview uses operational renderer with schema override',()=>
+  assert.match(panel,/IndexDynamicField/);
+ });
+ 
+-test('published user runtime schema is driven by active versioned form with runtime fallback',()=>{
++test('published schema only reads the builder active version and never resurrects removed legacy fields',()=>{
+  assert.match(runtime,/content_type_index_forms/);
+  assert.match(runtime,/index_forms/);
+  assert.match(runtime,/index_form_versions/);
+  assert.match(runtime,/index_form_fields/);
+  assert.match(runtime,/f\.active_version/);
+- assert.match(runtime,/runtime-hybrid-v4/);
+- assert.match(runtime,/runtime-fallback/);
+- assert.match(runtime,/index_runtime_post_type_fields/);
++ assert.match(runtime,/index-builder-v6/);
++ assert.doesNotMatch(runtime,/runtime-fallback/);
++ assert.doesNotMatch(runtime,/FROM zoha.index_runtime_post_type_fields/);
++ assert.match(runtime,/parent_key/);
+ });
+ 
+ test('dynamic renderer covers the advertised toolbox families',()=>{

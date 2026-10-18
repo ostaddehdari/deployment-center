@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-REPO="ostaddehdari/deployment-center"
-TAG="zohaonline-v0.5.1"
-ASSET="zohaonline-v0.5.1.zip"
-TARGET="${1:-/var/www/zoha}"
-TMP="$(mktemp -d /tmp/zohaonline-v0.5.1.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
-BASE="https://github.com/${REPO}/releases/download/${TAG}"
-curl --fail --location --retry 3 "$BASE/SHA256SUMS" -o "$TMP/SHA256SUMS"
-curl --fail --location --retry 3 "$BASE/$ASSET" -o "$TMP/$ASSET"
-(
- cd "$TMP"
- grep "  $ASSET$" SHA256SUMS | sha256sum -c -
-)
-unzip -q "$TMP/$ASSET" -d "$TMP/package"
-chmod +x "$TMP/package/apply.sh"
-bash "$TMP/package/apply.sh" "$TARGET"
+TAG="zohaonline-v0.6.0"
+BASE="https://github.com/ostaddehdari/deployment-center/releases/download/${TAG}"
+WORK="$(mktemp -d /tmp/zohaonline-v0.6.0.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+curl -fL --retry 3 "$BASE/zohaonline-v0.6.0.zip" -o "$WORK/zohaonline-v0.6.0.zip"
+echo "d6149fda3024ee6c580676845029826316d34f4aa70bdc3fce7b375482cb9055  $WORK/zohaonline-v0.6.0.zip" | sha256sum -c -
+unzip -q "$WORK/zohaonline-v0.6.0.zip" -d "$WORK/package"
+bash "$WORK/package/apply.sh" "${1:-/var/www/zoha}"
